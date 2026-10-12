@@ -1,0 +1,8 @@
+{
+  "workers": ["w0", "w1", "w2", "w3"],
+  "coordinator": "10.130.0.18:12380",
+  "remote_dir": "/home/tasma/rocora",
+  "python": "/home/tasma/venv/bin/python",
+  "lock_file": "/home/tasma/.cache/rocora/pod-worker.lock",
+  "seeds": {"pilot60m": [1337], "scale125m": [1337, 1338, 1339]}
+}

@@ -1,5 +1,0 @@
-[final_lm_adamw] step 40000 val 3.5219 (54.2 min)
-[final_lm_adamw] DONE
-[final_vit_adamw] step 40000 val 1.8248 acc 61.97% (114.4 min)
-[final_vit_adamw] DONE
-LANE0_DONE

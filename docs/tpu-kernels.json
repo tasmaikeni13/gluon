@@ -1,0 +1,71 @@
+{
+  "jax": "0.6.2",
+  "devices": [
+    "TPU_0(process=0,(0,0,0,0))",
+    "TPU_1(process=0,(1,0,0,0))",
+    "TPU_2(process=0,(0,1,0,0))",
+    "TPU_3(process=0,(1,1,0,0))"
+  ],
+  "size": 8388608,
+  "block": 65536,
+  "sequence": 1024,
+  "batch": 8,
+  "kernels": {
+    "adamw": {
+      "xla": {
+        "median_ms": 0.4594890051521361,
+        "min_ms": 0.43885000923182815
+      },
+      "pallas": {
+        "median_ms": 0.45046000741422176,
+        "min_ms": 0.4313600074965507
+      },
+      "speedup": 1.020043949716521,
+      "max_error": 0.0
+    },
+    "sophia": {
+      "xla": {
+        "median_ms": 0.4010400007246062,
+        "min_ms": 0.3860800061374903
+      },
+      "pallas": {
+        "median_ms": 0.4026399983558804,
+        "min_ms": 0.3830299974652007
+      },
+      "speedup": 0.9960262327692044,
+      "max_error": 0.0
+    },
+    "rocora": {
+      "xla": {
+        "median_ms": 0.43944000208284706,
+        "min_ms": 0.4168699961155653
+      },
+      "pallas": {
+        "median_ms": 0.43555999582167715,
+        "min_ms": 0.41978000081144273
+      },
+      "speedup": 1.008908086827052,
+      "max_error": 0.0
+    }
+  },
+  "attention": {
+    "max_forward_error": 0.001953125,
+    "max_backward_error": 4.470348358154297e-08,
+    "xla_forward": {
+      "median_ms": 0.6261200032895431,
+      "min_ms": 0.6176099996082485
+    },
+    "flash_forward": {
+      "median_ms": 0.5294900038279593,
+      "min_ms": 0.5226700013736263
+    },
+    "xla_backward": {
+      "median_ms": 2.1345389977796003,
+      "min_ms": 2.1123390033608302
+    },
+    "flash_backward": {
+      "median_ms": 2.1180399926379323,
+      "min_ms": 2.1090890077175573
+    }
+  }
+}

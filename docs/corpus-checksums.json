@@ -1,0 +1,45 @@
+{
+  "checked_workers": [
+    "w0",
+    "w1",
+    "w2",
+    "w3"
+  ],
+  "hashes_identical_across_workers": true,
+  "corpora": [
+    {
+      "dataset": "codelion/fineweb-edu-1B",
+      "files": {
+        "train": {
+          "sha256": "763804152ce5afd82275abd8607b55dfd92a0f39d1011403d110eca276d60e56",
+          "tokens": 990964987,
+          "metadata_hash_matched": true
+        },
+        "valid": {
+          "sha256": "536e937af4c352dc958115eb9dc5e1d71d11be1eb83edc3db529cc2143b7af7a",
+          "tokens": 10000000,
+          "metadata_hash_matched": true
+        }
+      },
+      "skipped_train_prefix_tokens": 0,
+      "usable_train_tokens": 990964987
+    },
+    {
+      "dataset": "HuggingFaceFW/fineweb-edu",
+      "files": {
+        "train": {
+          "sha256": "de7eeb8b13cc5a2f700769966b0102634dbdc481d7f85064dbf7dc0c02e567bb",
+          "tokens": 2500000000,
+          "metadata_hash_matched": false
+        },
+        "valid": {
+          "sha256": "2e062fb11e6f526875f5af256882c1b4ddaad4fe17944fbef9f3a63821d79dce",
+          "tokens": 10000000,
+          "metadata_hash_matched": false
+        }
+      },
+      "skipped_train_prefix_tokens": 241,
+      "usable_train_tokens": 2499999759
+    }
+  ]
+}

@@ -1,5 +1,0 @@
-[final_lm_gluon] step 40000 val 3.3677 (65.9 min)
-[final_lm_gluon] DONE
-[final_vit_gluon] step 40000 val 1.7943 acc 61.51% (132.3 min)
-[final_vit_gluon] DONE
-LANE1_DONE

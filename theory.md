@@ -1,160 +1,166 @@
-# GLUON — Split-Exact Curvature
+# Rocora: is the residual worth its cost?
 
-**A second-order optimizer built on a proved decomposition: the loss Hessian is an
-exactly-known positive core plus a gradient-sized measurable residual.**
-Every mathematical claim below is machine-verified in Lean 4 + Mathlib
-(`lean/Gluon.lean`, zero `sorry`, axioms = Lean's standard three; theorem names in
-parentheses) and mirrored numerically by the gates in `src/verify/` and `tests/`.
+Rocora means **Residual Only Coded Optimization with a Regularized Anchor**.
+The research question is:
 
----
+> Does adding residual-only coded curvature measurements to a positive
+> Gauss–Newton/Fisher core improve language-model updates enough to pay for the
+> extra computation?
 
-## 1. The problem, delimited from both sides
+This is an experimental question. The decomposition below, positive curvature
+core, Hessian-vector products, and randomized diagonal estimators are established
+tools. Formalizing their algebra does not establish novelty or training gains.
+The proposed contribution is evidence about the value of a specific residual
+channel, using a controlled core-only baseline and measured TPU cost.
 
-The Hessian `H ∈ ℝ^{N×N}` of a deep loss cannot be stored: every symmetric matrix *is*
-an exact Hessian (of its half-quadratic — `matrix_quad_witness`, `range_hess`), so
-unstructured exact curvature costs `dim Sym(N) = N(N+1)/2` degrees of freedom. And it
-cannot be read out through a single product `p = Hv` either: for every probe `v` there
-is a symmetric perturbation invisible to it yet nonzero on the diagonal
-(`one_probe_insufficient`). What remains affordable is a handful of Hessian-vector
-products per step. GLUON is the theory of extracting the *most curvature per product* —
-exactly where structure permits, at provably minimal variance where it does not.
+## Established decomposition
 
-## 2. Carriers: curvature as a composable operator
+For logits f(theta) and a smooth scalar loss ell, the exact chain rule gives
 
-The curvature of a block `f : ℝⁿ → ℝᵐ` at a point is carried by the pair
+    H = S + R
+    S = J_f^T (Hessian_logits ell) J_f
+    R = sum_a (d ell / d f_a) Hessian_theta f_a
 
-```
-𝒞(f;x) = (J, ℋ),   J = Df(x),   ℋ(λ) = ∇²⟨λ, f⟩(x)   (linear in λ, symmetric-valued)
-```
+S is the generalized Gauss–Newton matrix. For softmax cross-entropy it is also
+the model Fisher and is positive semidefinite. R is signed model curvature.
+This is the standard GGN-plus-residual decomposition, not a new identity.
+[ViViT](https://arxiv.org/abs/2106.02624) and
+[Martens](https://jmlr.org/papers/v21/17-678.html) describe this curvature setting.
 
-with the **pullback composition law** for `h = g ∘ f`:
+R is linear in the **logit loss gradient**, lambda. At a fixed model Jacobian and
+second derivative, scaling lambda by c scales R by c. This does not mean R
+necessarily shrinks monotonically during training: model derivatives also change.
+Stationarity in parameter space, J_f^T lambda = 0, does not imply lambda = 0.
+An NLP model can retain nonzero per-token logit loss gradients near a training
+optimum. We will measure residual size and utility instead of assuming collapse.
 
-```
-J_h = J_g J_f          ℋ_h(λ) = J_fᵀ ℋ_g(λ) J_f + ℋ_f(J_gᵀ λ)          (⋆)
-```
+## The nonnegative anchor
 
-Machine-checked: carriers form a category (`comp_assoc`, `id_comp`, `comp_id`) with
-symmetry preserved; the law (⋆) is the true second derivative of the true composition —
-proved through a coordinate-free second-order chain rule at Banach level and a bridge
-theorem down to matrices (`chain_snd`, `ExactAt.comp`, consistency `H_consistent`).
-Hessian-vector products of arbitrarily deep chains are computed by vector sweeps alone —
-no `n×n` intermediate ever exists (`chainHv_eq`, `chain_entry_recovery`), and a chain's
-curvature is a sum of pulled-back layer-local cores (`compChain_H`) — affine layers
-contribute zero, pointwise nonlinearities a diagonal (`affineCarrier`, `diagCarrier`).
+For a mean cross-entropy over N active tokens, independently sample labels from
+the model distribution. Let g_tilde be the gradient of that sampled-label mean
+loss. Conditional on the fixed batch and parameters,
 
-## 3. The split: what is known exactly vs. what must be measured
+    E[N * g_tilde^2] = diag(S)
 
-For a loss `ℓ ∘ f` (loss layer over features), (⋆) evaluated at the loss layer gives an
-exact — not approximate — decomposition (`split_exact`):
+where the square is coordinatewise. The sample is always nonnegative. It is an
+unbiased *sample*, not an exact diagonal. Sampled-label gradients from each TPU
+device are averaged with token-count weights before squaring; the result is
+multiplied by the global active-token count. This matches the global Bartlett
+sample in Sophia-G. A squared real-label gradient would estimate a different
+quantity.
 
-```
-H  =  S + R,      S = J_fᵀ (∇²ℓ) J_f      the structural core
-                  R = ℋ_f(∇ℓ)             the residual
-```
+Sophia-G uses this Gauss–Newton–Bartlett core. Its original implementation stores
+g_tilde^2 and multiplies the denominator by batch token count. We instead store
+N*g_tilde^2, so the same normalized diagonal goes directly into the denominator.
+Both use the same curvature batch size for every event in the main experiments.
+See [Sophia](https://arxiv.org/abs/2305.14342) and its
+[official code](https://github.com/Liuhong99/Sophia).
 
-The two parts have opposite characters, and this asymmetry is the whole design:
+## Residual-only coded measurements
 
-- **S is structurally known.** For convex `ℓ` it is positive semidefinite
-  (`core_posCore`) with nonnegative diagonal (`posCore_diag_nonneg`) and rank at most
-  the feature width (`rank_core_le`). Its diagonal admits exact or unbiased-nonnegative
-  evaluation without any Hessian product (for softmax/cross-entropy, `S` is the Fisher;
-  sampled-label gradients give `E[g̃ ⊙ g̃] = diag S`, each sample `≥ 0`).
-- **R is linear in the loss gradient** (`residual_smul`, `residual_zero`): it *shrinks
-  as training progresses* and vanishes at critical points of the loss.
+For a symmetric matrix M and a sign vector v,
 
-## 4. Tomographic probing: measurement with designed interference
+    v_i (M v)_i = M_ii + sum_(j != i) M_ij v_i v_j.
 
-What structure does not give, sign-probe products give. For a `±1` probe, dividing the
-response by the probe *is* multiplying by it (`probe_div_eq_mul`), and
+Assign each parameter coordinate a column of an m-by-m Sylvester Hadamard matrix.
+Take its m rows, multiplied coordinatewise by one independent random sign vector
+d shared within the group. For the group-mean estimator, conditional on a fixed M,
 
-```
-v_i (Mv)_i = M_ii + Σ_{j≠i} M_ij v_i v_j          (master_identity)
-```
+    E[estimate_i] = M_ii
+    Var(estimate_i) = sum_(j != i) M_ij^2 * Cbar_ij^2
 
-— the diagonal plus an interference term controlled, over a cycle of `m` coded probes,
-by the **code coherence** `Ĉ_ij = Σ_k v^k_i v^k_j`, a *design quantity* (`cycle_identity`).
-Machine-checked consequences:
+where Cbar is the average product of the assigned code columns. Different columns
+have zero coherence; collisions have nonzero coherence. Latin assignment across
+the last two tensor dimensions is a heuristic for reducing relevant collisions.
+It neither proves sparsity of the neural-network Hessian nor cancels every
+same-row or same-column pair in matrices wider than m.
 
-- Codes orthogonal across interacting pairs ⇒ **exact** diagonal, deterministically
-  (`diag_recovery_exact`); all-pairs orthogonal codes reconstruct the **full matrix**
-  as `M = (1/m) Σ_k p^k (v^k)ᵀ` (`full_recovery`) at the provably necessary cost
-  `m ≥ n` (`full_recovery_cost`); banded interference needs only `m = 2`
-  (`banded_two_probe`) — probe complexity tracks the interference graph, not the size.
-- A single uniform random sign flip de-biases *any* code cycle (`coded_unbiased`), with
-  variance **exactly**
+Rocora applies this estimator to **R**, and obtains diag(S) through sampled
+labels. Residual probing variance then depends on R alone. At fixed model
+derivatives, it scales quadratically when lambda is scaled. The *total*
+preconditioner remains noisy because its sampled core, minibatch selection,
+stale EMA state, and numerical arithmetic also contribute error. There is no
+guaranteed zero noise floor for the implemented optimizer.
+Residual-only variance is not universally lower than full-Hessian probing
+variance: S and R can cancel in the off-diagonal entries of H.
 
-  ```
-  Var_i = Σ_{j≠i} M_ij² · C̄_ij²,   C̄_ij = Ĉ_ij / m     (coded_variance)
-  ```
+The code measures every row of one coded group at the **same weights and batch**,
+using a fresh random flip for the next group. Spreading a group across optimizer
+updates would replace one fixed M with changing matrices and would invalidate
+the exact cancellation statement. The default m=4 is an engineering cost choice;
+it can be changed independently of the curvature refresh interval.
 
-  Hutchinson estimation is the degenerate one-probe case (`hutchinson_unbiased`,
-  `hutchinson_variance`); orthogonal pairs contribute exactly zero
-  (`orthogonal_zero_variance`); coded never exceeds Hutchinson (`coded_le_hutchinson`).
+## Direct residual products
 
-## 5. The fusion: probe the residual, not the Hessian
+At the measurement snapshot theta_0, freeze
+lambda = grad_logits ell(f(theta_0)). Define
 
-GLUON's central move: **take `S` structurally, spend every probe on `R` alone.**
-The bound theorems (all machine-checked, §8 of the Lean file):
+    phi(theta) = <stop_gradient(lambda), f(theta)>.
 
-| Claim | Theorem |
-|---|---|
-| exact core diag + residual probes orthogonal on `R`'s (sparser) graph ⇒ exact `diag H` | `split_probe_exact` |
-| unbiased for `diag H` under any codes, any flip | `split_probe_unbiased` |
-| estimator variance = the **residual's** variance only — `S` contributes zero | `split_variance_residual_only` |
-| variance scales as the **squared loss gradient**: `Var(c·∇ℓ) = c² Var(∇ℓ)` | `split_variance_scaling` |
-| at critical residual: deterministic exactness for every flip, any codes, even one probe | `split_exact_at_critical` |
-| measured ray curvature splits `vᵀHv = vᵀSv + vᵀRv` with `vᵀSv ≥ 0` guaranteed | `directional_split` |
+Then Hessian_theta phi(theta_0) = R, so forward-over-reverse products of phi
+measure Rv directly. This is equivalent to Hv-Sv in exact arithmetic while
+avoiding subtraction error and differentiation of the loss's softmax.
+The implementation caches one gradient linearization and applies it to the m
+sign probes. It never materializes a parameter Hessian.
 
-Probing `H` directly has no such mechanism: its variance retains the full structural
-term `Σ_j S_ij² C̄_ij²` *forever*, gradient-independent. The split estimator's error
-budget contracts along the very trajectory the optimizer produces — an estimator that
-**converges to exactness as training converges**, with the noise floor tied to `‖∇ℓ‖²`.
+Normal training/core events use BF16 matrix operations and TPU FlashAttention.
+The residual channel uses FP32 master parameters and tiled JAX attention, because
+the installed FlashAttention kernel does not implement second derivatives.
+The attention formulas agree in exact arithmetic; their finite-precision
+differences are numerical implementation error, not an exact split guarantee.
+Dense toy tests check the implemented direct operator against H-S.
 
-Payoffs (why the recovered quantities matter): the exact diagonal of a diagonal PD
-quadratic minimizes it in one preconditioned step from any start
-(`diag_newton_one_step`); the measured directional step `η* = (g·v)/(vᵀHv)` — both
-scalars exact from one product — is optimal along the ray (`directional_newton_optimal`).
+## Matched updates
 
-## 6. The GLUON optimizer
+All methods use clipped training gradients and decoupled weight decay. AdamW
+uses its usual bias-corrected first/second gradient moments. Sophia-G and Rocora
+share an uncorrected momentum EMA m and core EMA s. Rocora additionally keeps a
+residual EMA r, refreshed only at complete measurement groups.
 
-State: momentum `μ` (EMA β₁), curvature diagonal `ĥ` fused from the two channels.
+    h = s                         Sophia-G
+    h = s + w*r                   Rocora
+    denominator = max(rho*h, 0) + epsilon
+    update = clip(m / denominator, -1, 1)
+    theta_next = (1 - lr*weight_decay)*theta - lr*update
 
-1. **Core channel** (every probe event; cheap — one backward, no double-backward):
-   sampled-label gradient `g̃` on a small sub-batch; commit `ŝ ← EMA(g̃ ⊙ g̃)`.
-   Always `≥ 0` — the preconditioner base cannot flip sign (`posCore_diag_nonneg`).
-2. **Residual channel** (every `k` steps): one fp32 residual-vector product
-   `Rv = Hv − Sv` (`Hv` by double backward; `Sv` by JVP→`∇²ℓ`→VJP) with probe
-   `v = d ⊙ c^(r)`, `r` cycling through `m = 16` Hadamard codes; codes assigned
-   per-tensor by Latin coloring `code(a,b) = (a+b) mod m` so same-row/same-column
-   neighbours — the dominant interference — get orthogonal codes; global flip `d`
-   re-derived per cycle. Accumulate `r̂ ← EMA of cycle-mean (Rv ⊙ v)`.
-3. **Update** (clipped preconditioned momentum, decoupled weight decay), fused kernel:
+The positive s is the anchor; epsilon regularizes the denominator, and clipping
+bounds each coordinate's update when curvature is negative or uncertain.
+For w=0, Rocora matches Sophia-G exactly. Neither clipping nor an accurate Hessian
+diagonal proves a better nonconvex training trajectory. Signed residuals may
+improve scaling, do nothing, or worsen it; the experiment must distinguish these.
 
-   ```
-   ĥ = ŝ + r̂          θ ← θ − η·clamp( μ̂ / max(γ·ĥ, ε), −1, 1 ) − η·λ_wd·θ
-   ```
+## Study and decision
 
-The clip is the trust region: coordinates whose curvature is still noise-dominated take
-bounded sign-momentum steps; the confident high-curvature tail gets true Newton braking.
-The split moves coordinates from the first regime to the second as `‖∇ℓ‖` falls.
+1. Pilot: 60,894,720-parameter GPT, one seed, exactly 1B processed training tokens
+   from codelion/fineweb-edu-1B. The heldout split leaves about 991M unique training
+   tokens, so this budget includes a small repeated portion.
+2. Follow-up: 124,373,760-parameter GPT, seeds 1337/1338/1339, exactly 2.5B processed
+   FineWeb-Edu training tokens per run, using a larger corpus than the pilot subset.
+3. At both scales: AdamW, Sophia-G, Rocora; identical architectures, data ordering
+   within seed, token budgets, evaluation windows and hardware. Sophia-G/Rocora
+   share core/momentum/update hyperparameters; residual weight zero is an explicit
+   implementation equivalence gate. Learning-rate sensitivity can be explored
+   with equal tuning budgets, recorded separately from the matched residual study.
 
-## 7. Scope and honesty
+The primary comparison is **Rocora versus Sophia-G**. Report final heldout loss
+and perplexity at equal tokens, paired seed differences, variability across
+seeds, and heldout loss at equal measured training time. Equal-time values between
+evaluation points are labeled interpolated. Report curvature overhead and
+compile/evaluation/checkpoint costs separately. A token-efficiency gain that
+disappears at equal training time has not paid its compute cost under that recipe.
 
-- Lean covers the estimator algebra and probability (finite, exact), the split, the
-  chain rule tower, and the quadratic payoffs — **not** convergence of nonconvex
-  training; that is what the benchmarks measure (`REPORT.md`).
-- Smoothness (`C²`) is assumed at the probed point: GELU/tanh/SiLU networks qualify;
-  ReLU kinks do not (measure-zero, but stated).
-- The `Sv` product is exact in exact arithmetic; in fp32 its implementation error is
-  measured by the toy gate, not assumed away.
-- Cost claims (sweep counts, wall-clock overhead) are engineering measurements, not
-  theorems.
+AdamW establishes practical competitiveness. Beating AdamW alone cannot attribute
+the improvement to R. One favorable pilot cannot establish reproducibility or
+superiority at larger scale; a null or negative residual result is a valid answer
+to the stated question.
 
-## 8. Artifacts
+## Formal artifact scope
 
-- `lean/Gluon.lean` — the verified development (≈1150 lines, 40+ theorems;
-  compile: `lake env lean lean/Gluon.lean` against Mathlib v4.31).
-- `src/` — optimizer, models (39M decoder LM; 39M ViT), training, gates, plots.
-- `tests/` — numerical mirror of every theorem group + kernel parity + gates.
-- `REPORT.md` — WikiText-103 and CIFAR-100 benchmarks vs tuned AdamW, logs in `runs/`,
-  figures in `figures/`.
+[lean/Rocora.lean](lean/Rocora.lean) retains the carrier composition, exact split,
+fixed-matrix probing algebra, and quadratic step identities from the original
+development, under the new namespace. These statements concern smooth functions,
+exact arithmetic and explicit hypotheses. They do not prove sparse residual
+structure, a negligible core estimator variance, superiority to Sophia/AdamW,
+TPU performance, or convergence of this nonconvex optimizer. Numerical tests and
+full-budget benchmarks supply separate evidence for those implementation and
+empirical questions.

@@ -1,0 +1,18 @@
+{
+  "stage": "scale125m",
+  "model": {"width": 768, "layers": 12, "heads": 12, "sequence_length": 1024, "attention": "flash", "loss_chunk": 128},
+  "train_tokens": 2500000000,
+  "global_batch_size": 128,
+  "warmup_tokens": 100000000,
+  "train_file": "/home/tasma/data/fw25/fineweb_train_2_5B.npy",
+  "validation_file": "/home/tasma/data/fw25/fineweb_valid.npy",
+  "data_metadata": "/home/tasma/data/fw25/fineweb_metadata.json",
+  "dataset": "HuggingFaceFW/fineweb-edu",
+  "train_skip_initial_document": true,
+  "optimizer": {"core_interval": 20, "residual_interval": 40, "curvature_batch_per_device": 1, "probe_codes": 4},
+  "optimizers": {
+    "adamw": {"learning_rate": 0.0006, "beta1": 0.9, "beta2": 0.95, "eps": 1e-8},
+    "sophia": {"learning_rate": 0.0004, "beta1": 0.965, "beta2": 0.99, "rho": 0.03},
+    "rocora": {"learning_rate": 0.0004, "beta1": 0.965, "beta2": 0.99, "rho": 0.03, "residual_weight": 1.0}
+  }
+}
