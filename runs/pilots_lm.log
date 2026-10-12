@@ -1,0 +1,7 @@
+[p_lm_adamw_1e3] step 4000 val 4.1922 (5.4 min)
+[p_lm_adamw_1e3] DONE
+[p_lm_gluon_4e4_g02] step 4000 val 4.0621 (6.6 min)
+[p_lm_gluon_4e4_g02] DONE
+[p_lm_gluon_6e4_g02] step 4000 val 4.0500 (6.6 min)
+[p_lm_gluon_6e4_g02] DONE
+LM_PILOTS_DONE

@@ -1,0 +1,11 @@
+[p_vit_adamw_5e4] step 4000 val 1.6966 acc 56.90% (11.5 min)
+[p_vit_adamw_5e4] DONE
+[p_vit_adamw_1e3] step 4000 val 2.4484 acc 38.00% (11.5 min)
+[p_vit_adamw_1e3] DONE
+[p_vit_gluon_4e4_g02] step 4000 val 2.4114 acc 38.80% (13.2 min)
+[p_vit_gluon_4e4_g02] DONE
+[p_vit_gluon_2e4_g02] step 4000 val 1.8118 acc 54.04% (13.2 min)
+[p_vit_gluon_2e4_g02] DONE
+[p_vit_gluon_4e4_g05] step 4000 val 2.3258 acc 40.86% (13.2 min)
+[p_vit_gluon_4e4_g05] DONE
+VIT_PILOTS_DONE
