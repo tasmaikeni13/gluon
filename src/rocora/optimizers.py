@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from .updates import adamw_update, sophia_update, rocora_update
+from .matrix_optimizers import init_soap_factors, is_layer_stack, matrix_update
 
 
 class OptimizerState(NamedTuple):
@@ -14,6 +15,7 @@ class OptimizerState(NamedTuple):
     step: jax.Array
     core_events: jax.Array
     residual_events: jax.Array
+    preconditioner: dict
 
 
 class TrainState(NamedTuple):
@@ -23,9 +25,14 @@ class TrainState(NamedTuple):
 
 def init_state(params, cfg):
     zeros = lambda: jax.tree.map(jnp.zeros_like, params)
+    variance = (jax.tree_util.tree_map_with_path(
+        lambda path, p: jnp.zeros((p.shape[0], 0), jnp.float32)
+        if is_layer_stack(path) and p.ndim == 3 else jnp.zeros_like(p), params)
+        if cfg.name == "muon" else zeros())
     return TrainState(params, OptimizerState(
-        zeros(), zeros(), zeros() if cfg.name == "rocora" else {},
+        zeros(), variance, zeros() if cfg.name == "rocora" else {},
         jnp.int32(0), jnp.int32(0), jnp.int32(0),
+        init_soap_factors(params, cfg) if cfg.name == "soap" else {},
     ))
 
 
@@ -48,6 +55,8 @@ def commit_curvature(state, core_sample, residual_sample, cfg):
 
 
 def update(state, grads, lr, cfg, decay, gradient_scale=1.0):
+    if cfg.name in ("soap", "muon"):
+        return matrix_update(state, grads, lr, cfg, decay, gradient_scale)
     opt = state.optimizer
     step = opt.step + 1
     leaves, structure = jax.tree.flatten(state.params)

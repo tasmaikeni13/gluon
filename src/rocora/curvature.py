@@ -21,7 +21,10 @@ def coded_probe(params, key, row, m):
     leaves, tree = jax.tree.flatten(params)
     probes = []
     for i, p in enumerate(leaves):
-        flips = jax.random.rademacher(jax.random.fold_in(key, i), p.shape, dtype=p.dtype)
+        # Uniform bits give independent fair flips without the parameter-sized
+        # float uniform/max buffers used by random.rademacher on pinned JAX.
+        bits = jax.random.bits(jax.random.fold_in(key, i), p.shape, dtype=jnp.uint32)
+        flips = 1 - 2 * (bits & jnp.uint32(1)).astype(p.dtype)
         code = latin_codes(p.shape, m)
         parity = jax.lax.population_count(code & jnp.uint32(row)) & jnp.uint32(1)
         signs = 1 - 2 * parity.astype(p.dtype)
@@ -43,7 +46,7 @@ def core_sample(params, batch, cfg, key):
     return jax.tree.map(lambda g: count*jnp.square(g),grads),count
 
 
-def residual_diagonal(params, batch, cfg, key, m=4):
+def residual_diagonal(params, batch, cfg, key, m=4, initial=None, sample_weight=1.0):
     """One complete coded group at a fixed parameter/data snapshot.
 
     Freeze lambda=d(loss)/d(logits) and differentiate <lambda,f(theta)> twice:
@@ -62,12 +65,13 @@ def residual_diagonal(params, batch, cfg, key, m=4):
 
     # A shared linearization reuses the same derivative tape for all coded rows.
     _, product = jax.linearize(jax.grad(linear_loss), params)
-    initial = jax.tree.map(jnp.zeros_like, params)
+    if initial is None:
+        initial = jax.tree.map(jnp.zeros_like, params)
 
     def accumulate(total, row):
         probe = coded_probe(params, key, row, m)
         rv = product(probe)
-        total = jax.tree.map(lambda a, v, r: a + v * r / m, total, probe, rv)
+        total = jax.tree.map(lambda a, v, r: a + sample_weight * v * r / m, total, probe, rv)
         return total, None
 
     estimate, _ = jax.lax.scan(accumulate, initial, jnp.arange(m, dtype=jnp.uint32))

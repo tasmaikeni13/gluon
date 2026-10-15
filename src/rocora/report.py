@@ -9,6 +9,8 @@ import statistics
 def load_run(path):
     rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
     meta = next(r for r in rows if r["type"] == "meta")
+    if meta.get("bounded"):
+        raise ValueError(f"{path} is a bounded implementation check")
     for record in rows:
         if record["type"] == "resume":
             if record["code_sha256"] != meta["code_sha256"]:
@@ -38,7 +40,9 @@ def interpolate(evals, seconds):
     return evals[-1]["loss"]
 
 
-def summarize(paths):
+def summarize(paths, comparison="matched"):
+    if comparison not in ("matched", "tuned"):
+        raise ValueError("comparison must be matched or tuned")
     runs = {}
     for path in paths:
         run = load_run(path)
@@ -49,19 +53,27 @@ def summarize(paths):
     seeds = sorted({s for s, _ in runs})
     if not seeds:
         raise ValueError("No runs found")
-    arms = ("adamw", "sophia", "rocora")
+    first = next(iter(runs.values()))["meta"]
+    if "seeds" in first["config"] and seeds != sorted(first["config"]["seeds"]):
+        raise ValueError("Runs are missing a configured seed")
+    arms = tuple(first["config"].get("arms", ("adamw", "sophia", "rocora")))
+    if set(arms) != {arm for _, arm in runs}:
+        raise ValueError("Observed optimizer arms differ from the experiment recipe")
     for seed in seeds:
         if any((seed, arm) not in runs for arm in arms):
             raise ValueError(f"Seed {seed} is missing an optimizer arm")
     shared = ("stage", "model", "train_tokens", "global_batch_size", "warmup_tokens",
               "min_lr_fraction", "train_file", "validation_file", "data_metadata", "dataset", "eval_tokens")
-    shared += ("train_skip_initial_document",)
-    first = next(iter(runs.values()))["meta"]
+    shared += ("train_skip_initial_document", "microbatch_per_device", "purpose", "arms")
     for run in runs.values():
-        if any(run["meta"]["config"][k] != first["config"][k] for k in shared):
+        if run["meta"]["config"].get("purpose", "main") != "main" or run["meta"].get("reference"):
+            raise ValueError("Tuning/reference runs are not main-run comparisons")
+        if any(run["meta"]["config"].get(k) != first["config"].get(k) for k in shared):
             raise ValueError("Runs differ in architecture, data, schedule, or budget")
         if run["meta"]["code_sha256"] != first["code_sha256"]:
             raise ValueError("Runs were produced by different code")
+        if run["meta"].get("data") != first.get("data"):
+            raise ValueError("Runs were produced by different data")
         for key in ("devices","processes","jax","device_kind"):
             if key not in run["meta"] or run["meta"][key] != first.get(key):
                 raise ValueError("Runs differ in hardware or JAX runtime")
@@ -69,9 +81,10 @@ def summarize(paths):
         s, r = [runs[(seed,arm)]["meta"]["config"]["optimizer"] for arm in ("sophia","rocora")]
         for key in ("learning_rate","beta1","beta2","rho","eps","weight_decay","grad_clip",
                     "core_interval","curvature_batch_per_device"):
-            if s[key] != r[key]:
+            if comparison == "matched" and s[key] != r[key]:
                 raise ValueError(f"Sophia/Rocora differ in {key}; residual contribution is confounded")
-    summary = {"seeds": seeds, "train_tokens": first["config"]["train_tokens"], "arms": {}, "paired": []}
+    summary = {"seeds": seeds, "train_tokens": first["config"]["train_tokens"], "arms": {}, "paired": [],
+               "comparison": comparison, "single_seed": len(seeds) == 1}
     for arm in arms:
         losses = [runs[(seed,arm)]["final"]["loss"] for seed in seeds]
         times = [runs[(seed,arm)]["final"]["train_seconds"] for seed in seeds]
@@ -93,8 +106,10 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",required=True)
     parser.add_argument("--output")
+    parser.add_argument("--comparison", choices=("matched", "tuned"), default="matched",
+                        help="Tuned compares independently selected recipes without residual attribution")
     args=parser.parse_args(argv)
-    result=summarize(sorted(Path(args.root).glob("*/metrics.jsonl")))
+    result=summarize(sorted(Path(args.root).glob("*/metrics.jsonl")), args.comparison)
     print(json.dumps(result,indent=2))
     if args.output:
         Path(args.output).write_text(json.dumps(result,indent=2)+"\n")

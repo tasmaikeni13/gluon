@@ -6,6 +6,8 @@ import math
 import os
 from pathlib import Path
 
+OPTIMIZERS = ("adamw", "sophia", "rocora", "soap", "muon")
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -61,10 +63,17 @@ class OptimizerConfig:
     curvature_batch_per_device: int = 1
     probe_codes: int = 4
     residual_weight: float = 1.0
+    soap_precondition_frequency: int = 10
+    soap_max_precondition_dim: int = 2048
+    soap_shampoo_beta: float = 0.95
+    muon_momentum: float = 0.95
+    muon_nesterov: bool = True
+    muon_ns_steps: int = 5
+    muon_aux_lr: float = 6e-4
 
     def validate(self):
-        if self.name not in ("adamw", "sophia", "rocora"):
-            raise ValueError("optimizer must be adamw, sophia, or rocora")
+        if self.name not in OPTIMIZERS:
+            raise ValueError(f"optimizer must be one of {OPTIMIZERS}")
         if not all(0 <= b < 1 for b in (self.beta1, self.beta2, self.beta_residual)):
             raise ValueError("EMA betas must be in [0, 1)")
         if min(self.learning_rate, self.eps, self.rho) <= 0:
@@ -77,6 +86,14 @@ class OptimizerConfig:
             raise ValueError("probe_codes must be a power of two")
         if self.residual_weight < 0:
             raise ValueError("residual_weight cannot be negative")
+        if min(self.soap_precondition_frequency, self.soap_max_precondition_dim, self.muon_ns_steps) <= 0:
+            raise ValueError("SOAP dimensions/frequency and Muon iterations must be positive")
+        if not 0 <= self.soap_shampoo_beta < 1 or not 0 <= self.muon_momentum < 1:
+            raise ValueError("SOAP and Muon EMA coefficients must be in [0,1)")
+        if self.muon_aux_lr <= 0:
+            raise ValueError("Muon auxiliary AdamW learning rate must be positive")
+        if any(not math.isfinite(v) for v in asdict(self).values() if isinstance(v, float)):
+            raise ValueError("Optimizer settings must be finite")
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,13 @@ class ExperimentConfig:
     eval_interval: int = 500
     checkpoint_interval: int = 1000
     log_interval: int = 20
+    microbatch_per_device: int = 1
+    seeds: tuple = (1337,)
+    arms: tuple = ("adamw", "sophia", "rocora")
+    purpose: str = "main"
+    # Zero allows the historical pilot's small corpus repeat. New recipes fail
+    # before launch if a short archive would silently repeat billions of tokens.
+    minimum_train_corpus_tokens: int = 0
 
     def validate(self):
         self.model.validate()
@@ -111,6 +135,14 @@ class ExperimentConfig:
             raise ValueError("min_lr_fraction must be in (0,1]")
         if min(self.eval_interval, self.checkpoint_interval, self.log_interval) <= 0:
             raise ValueError("Logging/evaluation/checkpoint intervals must be positive")
+        if self.microbatch_per_device <= 0 or self.minimum_train_corpus_tokens < 0:
+            raise ValueError("Invalid microbatch or corpus minimum")
+        if not self.seeds or len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("Provide distinct experiment seeds")
+        if not self.arms or len(set(self.arms)) != len(self.arms) or any(a not in OPTIMIZERS for a in self.arms):
+            raise ValueError("Invalid experiment arms")
+        if self.purpose not in ("main", "tuning", "validation"):
+            raise ValueError("purpose must be main, tuning, or validation")
 
     @property
     def tokens_per_step(self):
@@ -130,10 +162,15 @@ def load_config(path, optimizer=None, seed=None):
     shared = raw.pop("optimizer", {})
     arms = raw.pop("optimizers", {})
     name = optimizer or shared.get("name", "rocora")
+    if arms and name not in arms:
+        raise ValueError(f"Optimizer {name} has no settings in {path}")
     shared.update(arms.get(name, {}))
     shared["name"] = name
     if seed is not None:
         raw["seed"] = seed
+    for key in ("seeds", "arms"):
+        if key in raw:
+            raw[key] = tuple(raw[key])
     for k in ("train_file", "validation_file", "data_metadata", "output_dir"):
         if k in raw:
             raw[k] = os.path.expandvars(os.path.expanduser(raw[k]))

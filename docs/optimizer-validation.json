@@ -1,0 +1,98 @@
+{
+  "scope": "bounded implementation validation only; not convergence evidence",
+  "runtime": {
+    "python": "3.10",
+    "jax": "0.6.2",
+    "libtpu": "0.0.17",
+    "device_kind": "TPU v4",
+    "hosts": 4,
+    "devices": 16
+  },
+  "cpu_suite": {
+    "command": "PYTHONPATH=src JAX_PLATFORMS=cpu /home/tasma/venv/bin/python -m pytest -q",
+    "tests_passed": 33,
+    "author_reference_vectors": {
+      "soap": "Multi-step outputs checked against pinned official implementation vectors and an independent NumPy reference.",
+      "muon": "Nine BF16 momentum/direction outputs checked against pinned official implementation vectors; FP32 polynomial checked against an independent singular-value calculation."
+    }
+  },
+  "corpus": {
+    "dataset": "HuggingFaceFW/fineweb-edu",
+    "archive": "/home/tasma/data/fw25/fineweb_train_2_5B.npy",
+    "train_tokens_available": 2500000000,
+    "validation_tokens_available": 10000000,
+    "shared_document_prefix_tokens_skipped": 241,
+    "note": "The configured 7B/20B main corpora were unavailable; no full-budget run was launched."
+  },
+  "runs": [
+    {
+      "stage": "scale125m",
+      "optimizer": "soap",
+      "parameters": 124373760,
+      "devices": 16,
+      "seed": 1337,
+      "validation_run_names": [
+        "validation/optimizers-20261015/scale125m/soap",
+        "validation/optimizers-20261015/scale125m/soap-uninterrupted"
+      ],
+      "resume_comparison": {
+        "resumed_steps": [3, 9],
+        "uninterrupted_steps": 12,
+        "training_tokens": 1572864,
+        "arrays_compared": 60,
+        "bitwise_identical": true,
+        "state_sha256": "d29a90c67eadc2322c0b6850044f052a24cf80cba093f099ce6f51144f5da8af",
+        "resumed_source_sha256": "7835ce14a6e60abb17010641702b074bf01ea1ba064ddaaf008c37b6df2d76f6",
+        "uninterrupted_source_sha256": "a2349a3dbc3e12380d616581fadb63a34e53bb850b67a63a6b70db347e76de06",
+        "comparison_note": "The repository source fingerprints differ across the checks; the code changes were outside the SOAP update path."
+      },
+      "final_validation_loss": 9.546348571777344,
+      "full_budget_complete": false
+    },
+    {
+      "stage": "scale125m",
+      "optimizer": "muon",
+      "parameters": 124373760,
+      "devices": 16,
+      "seed": 1337,
+      "source_sha256": "bf369cb6d48ce398fa153bf9d08aeb26cd11535b764893005b4c385fa61d8d72",
+      "run_name": "validation/hardware-matrix-optimizer/muon125m",
+      "steps": 3,
+      "training_tokens": 393216,
+      "compile_seconds": 53.44805044098757,
+      "train_seconds": 0.7048390779527836,
+      "train_loss": 10.966171900431315,
+      "validation_tokens": 131072,
+      "validation_loss": 10.953927040100098,
+      "checkpoint_enabled": false,
+      "full_budget_complete": false
+    },
+    {
+      "stage": "scale1b",
+      "optimizer": "rocora",
+      "parameters": 984909312,
+      "devices": 16,
+      "seed": 1337,
+      "source_sha256": "bf369cb6d48ce398fa153bf9d08aeb26cd11535b764893005b4c385fa61d8d72",
+      "run_name": "validation/hardware-memory-fix/rocora1b",
+      "archive_tokens": 2500000000,
+      "configured_main_tokens": 20000000000,
+      "steps": 3,
+      "training_tokens": 393216,
+      "compile_seconds": {
+        "core_curvature": 429.51564676099224,
+        "residual_curvature": 450.4268195690238,
+        "train": 394.55319159000646
+      },
+      "train_seconds": 7.303759391012136,
+      "train_loss": 11.025102615356445,
+      "validation_tokens": 131072,
+      "validation_loss": 10.881950378417969,
+      "core_events": 1,
+      "residual_events": 1,
+      "checkpoint_enabled": false,
+      "full_budget_complete": false
+    }
+  ],
+  "full_sweeps_or_main_runs_launched": false
+}

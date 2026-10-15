@@ -12,9 +12,12 @@ import tempfile
 import threading
 import time
 import uuid
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from rocora.config import OPTIMIZERS
 
 
 def run_workers(pod, commands, guarded=True):
@@ -130,6 +133,12 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("sync")
     sub.add_parser("status")
+    p = sub.add_parser("sweep")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--plan-only", action="store_true", help="Materialize configs without SSH or training")
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--max-steps", type=int)
     for name in ("run", "stage"):
         p = sub.add_parser(name)
         p.add_argument("--config", required=True)
@@ -137,12 +146,15 @@ def main():
         p.add_argument("--dry-run", action="store_true")
         p.add_argument("--max-steps", type=int)
         p.add_argument("--run-name")
+        p.add_argument("--skip-checkpoint", action="store_true")
         if name == "run":
-            p.add_argument("--optimizer", choices=("adamw", "sophia", "rocora"), required=True)
+            p.add_argument("--optimizer", choices=OPTIMIZERS, required=True)
             p.add_argument("--seed", type=int, default=1337)
     args = parser.parse_args()
     if hasattr(args,"max_steps") and args.max_steps is not None and args.max_steps <= 0:
         parser.error("--max-steps must be positive")
+    if getattr(args, "skip_checkpoint", False) and (not args.max_steps or args.resume):
+        parser.error("--skip-checkpoint requires --max-steps and cannot be used with --resume")
     pod = json.loads(Path(args.pod).read_text())
     if args.command == "sync":
         sync(pod)
@@ -164,6 +176,34 @@ print(json.dumps(info,sort_keys=True))
 """
         command = shlex.join([pod["python"],"-c",status_code,pod["lock_file"]])
         run_workers(pod, [command] * len(pod["workers"]), guarded=False)
+    elif args.command == "sweep":
+        from rocora.sweep import materialize
+        manifest = materialize(args.spec)
+        print(json.dumps({k: v for k, v in manifest.items() if k != "trials"}, indent=2), flush=True)
+        if args.plan_only:
+            return
+        # Generated configs must reach all replicas under the normal sync lock.
+        sync(pod)
+        for trial in manifest["trials"]:
+            run_name = ("validation/" if args.max_steps else "") + trial["run_name"]
+            extra = ["--run-name", run_name]
+            if args.resume:
+                check = ("import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                         "print(json.dumps({'exists':p.exists(),"
+                         "'checkpoint':(p/'checkpoints/latest.npz').exists()}))")
+                command = "cd " + shlex.quote(pod["remote_dir"]) + " && " + shlex.join(
+                    [pod["python"], "-c", check, str(Path(trial["config"]["output_dir"]) / run_name)])
+                status = json.loads(subprocess.check_output(["ssh", pod["workers"][0], command], text=True))
+                if status["checkpoint"]:
+                    extra.append("--resume")
+                elif status["exists"] and not args.dry_run:
+                    raise RuntimeError(f"{run_name} has no checkpoint; preserve it and choose a new sweep name")
+            if args.dry_run:
+                extra.append("--dry-run")
+            if args.max_steps:
+                extra.extend(["--max-steps", str(args.max_steps)])
+            run_workers(pod, train_commands(pod, trial["config_path"], trial["optimizer"],
+                                            trial["config"]["seed"], extra))
     else:
         extra = []
         if args.resume:
@@ -172,6 +212,8 @@ print(json.dumps(info,sort_keys=True))
             extra.append("--dry-run")
         if args.max_steps:
             extra += ["--max-steps", str(args.max_steps)]
+        if args.skip_checkpoint:
+            extra.append("--skip-checkpoint")
         if args.run_name:
             if args.command == "stage":
                 parser.error("--run-name is only valid with run; stage creates distinct arm/seed names")
@@ -194,8 +236,8 @@ print(json.dumps(info,sort_keys=True))
                          "'Complete the three 1B-token pilot arms before the full 125M stage'")
                 command = "cd " + shlex.quote(pod["remote_dir"]) + " && " + shlex.join([pod["python"],"-c",check])
                 subprocess.run(["ssh",pod["workers"][0],command],check=True)
-            for seed in pod["seeds"][stage]:
-                for optimizer in ("adamw", "sophia", "rocora"):
+            for seed in config.get("seeds", pod["seeds"].get(stage, [1337])):
+                for optimizer in config.get("arms", ("adamw", "sophia", "rocora")):
                     print(f"Starting {stage}: {optimizer}, seed {seed}", flush=True)
                     arm_extra=list(extra)
                     if args.max_steps:

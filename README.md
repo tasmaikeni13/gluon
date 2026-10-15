@@ -8,7 +8,8 @@ This is a JAX/XLA research codebase for a Cloud TPU v4-32 pod. It asks:
 > Gauss–Newton/Fisher core improve language-model updates enough to pay for the
 > extra computation?
 
-The experiment compares **AdamW, Sophia-G, and Rocora**. Sophia-G is the core-only
+The experiment compares **AdamW, Sophia-G, Rocora, SOAP, and Muon** at the larger
+scales. Sophia-G is the core-only
 control: it has the same sampled-label core, momentum, clipping, decay, and
 hyperparameters as Rocora. Rocora adds an EMA of the signed residual diagonal.
 Setting Rocora's residual weight to zero reproduces Sophia-G exactly.
@@ -22,10 +23,12 @@ estimator, its limits, and the experimental decision criteria.
 
 | Stage | Actual parameters | Loss tokens processed | Seeds | Optimizers |
 |---|---:|---:|---|---|
-| Pilot | 60,894,720 | 1,000,000,000 | 1337 | AdamW, Sophia-G, Rocora |
-| Follow-up | 124,373,760 | 2,500,000,000 each | 1337, 1338, 1339 | AdamW, Sophia-G, Rocora |
+| Pilot | 60,894,720 | 1,000,000,000 | 1337, 1338, 1339 | AdamW, Sophia-G, Rocora |
+| 125M | 124,373,760 | 2,500,000,000 each | 1337, 1338, 1339 | All five |
+| 350M | 354,599,936 | 7,000,000,000 each | 1337 | All five |
+| 1B | 984,909,312 | 20,000,000,000 each | 1337 | All five |
 
-Both GPT models use a 1024-token context, GPT-2 BPE, tied embeddings, smooth GELU,
+All GPT models use a 1024-token context, GPT-2 BPE, tied embeddings, smooth GELU,
 and no dropout. The global batch is 128 sequences. The final batch is masked so
 the loss-token budget is exact. Initial learning rates are configurable pilot
 settings, rather than claimed optimal values. Sophia-G and Rocora deliberately
@@ -42,6 +45,19 @@ boundary. The follow-up configuration excludes its remaining 241-token training
 prefix to prevent that overlap. This exclusion is recorded; the exact 2.5B
 processed-token budget can repeat a few remaining tokens. Fresh content-hash
 preparation avoids this boundary split and does not need the exclusion.
+
+The 350M and 1B recipes require newly prepared 7B/20B-token archives and reject
+shorter corpora. Budget sweeps provide six candidates per optimizer at 125M,
+350M and 1B, with 25M/70M/200M tokens per trial respectively. Rates in the main
+configs are provisional. [docs/optimizers.md](docs/optimizers.md) describes the
+reference SOAP/Muon algorithms, exact parameter counts, tuning budgets, data
+preparation, validation limitations, and recipe selection.
+
+Plan a sweep without starting any training:
+
+```bash
+PYTHONPATH=src /home/tasma/venv/bin/python scripts/pod.py sweep --spec configs/sweeps/scale350m.json --plan-only
+```
 
 ## TPU setup and launch
 
@@ -68,11 +84,15 @@ python scripts/pod.py sync
 python scripts/pod.py stage --config configs/pilot60m.json --dry-run
 ```
 
-Launch the three pilot arms, then the nine follow-up runs:
+The following commands launch full training and are provided for later use.
+After completing the pilot gate and preparing the needed data, launch a stage
+(prefer selected sweep recipes as described in docs/optimizers.md):
 
 ```bash
 python scripts/pod.py stage --config configs/pilot60m.json
 python scripts/pod.py stage --config configs/scale125m.json
+python scripts/pod.py stage --config configs/scale350m.json
+python scripts/pod.py stage --config configs/scale1b.json
 ```
 
 To resume a stage, append --resume. For one arm or a bounded hardware smoke run:
@@ -97,9 +117,14 @@ accidentally reusing another run's directory.
   scans, activation rematerialization, chunked output projection/loss, and host
   batch prefetch reduce memory traffic and launch overhead.
 - XLA compiles and fuses the complete training step, including gradient scaling,
-  momentum, preconditioning, clipping and decoupled decay for all three optimizers.
+  momentum, preconditioning, clipping and decoupled decay for all optimizers.
   Parameter/state buffers are donated. Custom optimizer kernels were removed
   after measurements showed no meaningful advantage over XLA fusion.
+- SOAP keeps per-axis Gram matrices and bases and transports rotated Adam
+  moments at basis refreshes. Muon applies BF16 Newton–Schulz to hidden matrices
+  and AdamW to tied embeddings, positions and norm gains. Each stacked layer
+  is processed independently. One-sequence microbatches bound activation memory
+  while accumulating one token-weighted gradient for each global update.
 - Residual measurements use FP32, tiled differentiable attention. The installed
   FlashAttention backward explicitly does not support higher-order autodiff.
   Each complete coded group measures one fixed set of weights and data.
@@ -152,9 +177,11 @@ PYTHONPATH=src python -m rocora.report --root outputs/pilot60m
 PYTHONPATH=src python -m rocora.report --root outputs/scale125m
 ```
 
-The report rejects incomplete budgets, missing arms, changed code/data, and
-Sophia/Rocora settings that would confound the residual comparison. A one-seed
-pilot screens the idea; the three-seed study measures repeatability.
+The report rejects bounded checks, incomplete budgets, missing arms, changed
+code/data, and Sophia/Rocora settings that would confound the residual comparison.
+Independently tuned comparisons require --comparison tuned and do not isolate
+the residual contribution. Multi-seed studies measure repeatability; the
+one-seed 350M/1B recipes screen larger scales.
 
 ## Validation and references
 

@@ -56,6 +56,11 @@ def test_fixed_snapshot_residual_matches_dense_hessian_split():
         expected+=v*(R@v)/4
     actual,_=ravel_pytree(residual_diagonal(params,batch,cfg,key,4)[0])
     np.testing.assert_allclose(actual,expected,rtol=4e-3,atol=4e-4)
+    old=jax.tree.map(lambda p:jnp.full_like(p,.17),params)
+    folded,_=ravel_pytree(residual_diagonal(params,batch,cfg,key,4,
+        initial=jax.tree.map(lambda x:.95*x,old),sample_weight=.05)[0])
+    old_flat,_=ravel_pytree(old)
+    np.testing.assert_allclose(folded,.95*old_flat+.05*actual,rtol=2e-5,atol=2e-6)
     assert float(jnp.linalg.norm(R))>1e-5
 
 
@@ -111,7 +116,7 @@ def test_stage_counts_and_sophia_rocora_settings():
         for field in ("learning_rate","beta1","beta2","rho","eps","weight_decay","core_interval"):
             assert getattr(cfg.optimizer,field)==getattr(sophia.optimizer,field)
     pod=json.loads((root/"configs/pod.json").read_text())
-    assert pod["seeds"]["pilot60m"]==[1337]
+    assert pod["seeds"]["pilot60m"]==[1337, 1338, 1339]
     assert pod["seeds"]["scale125m"]==[1337,1338,1339]
 
 

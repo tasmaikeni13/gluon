@@ -18,7 +18,7 @@ import numpy as np
 from jax.experimental import multihost_utils
 
 from .checkpoint import identity, load_checkpoint, save_checkpoint
-from .config import load_config, learning_rate
+from .config import OPTIMIZERS, load_config, learning_rate
 from .curvature import core_gradients, residual_diagonal
 from .data import TokenBatches, shard_batch, validate_corpus
 from .model import decay_mask, init_params, loss_sum
@@ -41,10 +41,23 @@ def build_steps(cfg, params):
         total = jax.lax.psum(local_count, "data")
         return jax.tree.map(lambda g: jax.lax.psum(g * local_count, "data") / jnp.maximum(total, 1), tree)
 
-    def train_step(state, batch):
+    def local_gradient(params, batch):
+        size = batch["tokens"].shape[0]
+        micro = min(cfg.microbatch_per_device, size)
+        if size % micro:
+            raise ValueError("Per-device batch must be divisible by microbatch_per_device")
+        batches = jax.tree.map(lambda x: x.reshape((-1, micro) + x.shape[1:]), batch)
+        initial = (jnp.float32(0), jax.tree.map(jnp.zeros_like, params))
+        def accumulate(carry, piece):
+            value, gradient = jax.value_and_grad(lambda p: loss_sum(p, piece, model_cfg))(params)
+            return (carry[0] + value, jax.tree.map(jnp.add, carry[1], gradient)), None
+        (total_loss, grads), _ = jax.lax.scan(accumulate, initial, batches)
         count = jnp.sum(batch["mask"])
-        loss, grads = jax.value_and_grad(lambda p: loss_sum(p, batch, model_cfg)
-                                        / jnp.maximum(count, 1))(state.params)
+        denominator = jnp.maximum(count, 1)
+        return total_loss / denominator, jax.tree.map(lambda g: g / denominator, grads), count
+
+    def train_step(state, batch):
+        loss, grads, count = local_gradient(state.params, batch)
         grads = average_tree(grads, count)
         norm, scale = gradient_norm_and_scale(grads, opt_cfg.grad_clip)
         lr = learning_rate(state.optimizer.step, cfg)
@@ -55,7 +68,11 @@ def build_steps(cfg, params):
                        "tokens": total}
 
     def evaluation(params, batch):
-        return {"loss_sum": jax.lax.psum(loss_sum(params, batch, model_cfg), "data"),
+        size = batch["tokens"].shape[0]
+        micro = min(cfg.microbatch_per_device, size)
+        batches = jax.tree.map(lambda x: x.reshape((-1, micro) + x.shape[1:]), batch)
+        losses = jax.lax.map(lambda b: loss_sum(params, b, model_cfg), batches)
+        return {"loss_sum": jax.lax.psum(jnp.sum(losses), "data"),
                 "tokens": jax.lax.psum(jnp.sum(batch["mask"]), "data")}
 
     def curvature_step(state, batch, do_core, do_residual):
@@ -70,10 +87,19 @@ def build_steps(cfg, params):
             core = jax.tree.map(lambda g: total*jnp.square(g),grads)
         if do_residual:
             # Every replica uses the SAME probe vector; products are averaged over data.
+            # Carry the residual EMA through the complete group instead of
+            # retaining both an old EMA and a parameter-sized sample buffer.
+            initial = jax.tree.map(lambda r: opt_cfg.beta_residual * r, state.optimizer.residual)
             residual, count = residual_diagonal(state.params, batch, model_cfg,
-                                                 jax.random.fold_in(key, 1), opt_cfg.probe_codes)
+                                                 jax.random.fold_in(key, 1), opt_cfg.probe_codes,
+                                                 initial=initial,
+                                                 sample_weight=1-opt_cfg.beta_residual)
             residual = average_tree(residual, count)
-        return commit_curvature(state, core, residual, opt_cfg)
+        state = commit_curvature(state, core, None, opt_cfg)
+        if do_residual:
+            state = state._replace(optimizer=state.optimizer._replace(
+                residual=residual, residual_events=state.optimizer.residual_events+1))
+        return state
 
     return (
         jax.pmap(train_step, axis_name="data", donate_argnums=(0,)),
@@ -98,7 +124,7 @@ def _code_digest():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--optimizer", choices=("adamw", "sophia", "rocora"), required=True)
+    parser.add_argument("--optimizer", choices=OPTIMIZERS, required=True)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--coordinator")
     parser.add_argument("--processes", type=int)
@@ -106,6 +132,8 @@ def main(argv=None):
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--run-name")
     parser.add_argument("--max-steps", type=int, help="Bounded smoke run; does not change the experiment budget")
+    parser.add_argument("--skip-checkpoint", action="store_true",
+                        help="Bounded validation only: avoid writing a multi-GB checkpoint")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reference", action="store_true", help="Differentiable attention for CPU validation")
     args = parser.parse_args(argv)
@@ -114,6 +142,8 @@ def main(argv=None):
         cfg = replace(cfg, model=replace(cfg.model, attention="reference"))
     if args.max_steps is not None and args.max_steps <= 0:
         parser.error("max-steps must be positive")
+    if args.skip_checkpoint and (args.max_steps is None or args.resume):
+        parser.error("--skip-checkpoint requires --max-steps and cannot be used with --resume")
     jax.config.update("jax_compilation_cache_dir",
                       os.environ.get("JAX_COMPILATION_CACHE_DIR", str(Path(".cache/jax").resolve())))
     initialize_distributed(args.coordinator, args.processes, args.process_id)
@@ -140,7 +170,8 @@ def main(argv=None):
         print(json.dumps(summary, sort_keys=True), flush=True)
     if args.dry_run:
         return
-    run_name = args.run_name or f"{cfg.stage}/{args.optimizer}-s{cfg.seed}"
+    run_name = args.run_name or (("validation/" if args.max_steps else "")
+                               + f"{cfg.stage}/{args.optimizer}-s{cfg.seed}")
     run_dir = Path(cfg.output_dir) / run_name
     checkpoint = run_dir / "checkpoints" / "latest.npz"
     # All hosts receive the same decision; fail before entering collective training.
@@ -165,6 +196,9 @@ def main(argv=None):
     start_step = int(state.optimizer.step)
     state = jax.device_put_replicated(state, devices)
     train_step, evaluate, curvature_step, diagnostics = build_steps(cfg, params)
+    # The replicated state owns the live weights. Keeping the initialization
+    # arrays too would retain another ~3.7 GiB on device 0 at nominal 1B scale.
+    del params
     loader = TokenBatches(cfg.train_file, cfg.model.sequence_length, cfg.global_batch_size,
                          hosts, host, cfg.seed, True, cfg.train_tokens,
                          cfg.train_skip_initial_document)
@@ -183,6 +217,7 @@ def main(argv=None):
     log({"type": "resume" if args.resume else "meta", **summary,
          "config": cfg.to_dict(), "code_sha256": _code_digest(),
          "start_step": start_step, "reference": args.reference,
+         "bounded": args.max_steps is not None, "checkpoint_enabled": not args.skip_checkpoint,
          "train_skipped_prefix_tokens": loader.skipped_tokens,
          "usable_corpus_tokens": int(loader.tokens.size)})
     stop = min(cfg.steps, start_step + args.max_steps) if args.max_steps else cfg.steps
@@ -201,23 +236,27 @@ def main(argv=None):
             if step + 1 < stop:
                 next_batch = prefetch.submit(loader.batch, step + 1)
             batch = shard_batch(batch, devices)
-            do_core = cfg.optimizer.name != "adamw" and step % cfg.optimizer.core_interval == 0
+            do_core = (cfg.optimizer.name in ("sophia", "rocora")
+                       and step % cfg.optimizer.core_interval == 0)
             do_residual = (cfg.optimizer.name == "rocora" and cfg.optimizer.residual_weight > 0
                            and step % cfg.optimizer.residual_interval == 0)
             event_seconds = 0.0
-            if do_core or do_residual:
-                event = (do_core, do_residual)
+            # Separate events share the exact parameter/data snapshot and keys.
+            # This bounds compile/temporary memory without overlapping jobs or
+            # carrying any coded row across an optimizer update.
+            events = ([(True, False)] if do_core else []) + ([(False, True)] if do_residual else [])
+            for event in events:
                 t0 = time.perf_counter()
                 if event not in compiled:
                     compiled[event] = curvature_step.lower(state, batch, *event).compile()
                     multihost_utils.sync_global_devices(f"compile-curvature-{event}")
                     compile_seconds += time.perf_counter() - t0
-                    log({"type": "compile", "kind": "curvature", "core": do_core,
-                         "residual": do_residual, "seconds": time.perf_counter() - t0})
+                    log({"type": "compile", "kind": "curvature", "core": event[0],
+                         "residual": event[1], "seconds": time.perf_counter() - t0})
                 t0 = time.perf_counter()
                 state = compiled[event](state, batch)
                 jax.block_until_ready(state)
-                event_seconds = time.perf_counter() - t0
+                event_seconds += time.perf_counter() - t0
             if "train" not in compiled:
                 t0 = time.perf_counter()
                 compiled["train"] = train_step.lower(state, batch).compile()
@@ -251,7 +290,7 @@ def main(argv=None):
                           f"tokens={tokens:,} time={train_seconds:.1f}s", flush=True)
                 elapsed, curvature_elapsed, loss_total, n, window_tokens = 0.0, 0.0, 0.0, 0, 0
             if (step + 1) % cfg.eval_interval == 0 or step + 1 == stop:
-                if cfg.optimizer.name != "adamw":
+                if cfg.optimizer.name in ("sophia", "rocora"):
                     if "diagnostics" not in compiled:
                         compiled["diagnostics"] = diagnostics.lower(state).compile()
                         multihost_utils.sync_global_devices("compile-diagnostics")
@@ -276,7 +315,7 @@ def main(argv=None):
                      "eval_seconds": time.perf_counter() - t0})
                 if host == 0:
                     print(f"validation loss={val_loss:.4f}", flush=True)
-            if (step + 1) % cfg.checkpoint_interval == 0 or step + 1 == stop:
+            if not args.skip_checkpoint and ((step + 1) % cfg.checkpoint_interval == 0 or step + 1 == stop):
                 multihost_utils.sync_global_devices(f"checkpoint-{step}")
                 if host == 0:
                     save_checkpoint(checkpoint, _first(state), cfg, train_seconds, _code_digest())

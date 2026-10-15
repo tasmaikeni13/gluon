@@ -19,6 +19,7 @@ rocora-train = "rocora.train:entrypoint"
 rocora-data = "rocora.prepare:main"
 rocora-bench = "rocora.benchmark:main"
 rocora-report = "rocora.report:main"
+rocora-sweep = "rocora.sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

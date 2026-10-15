@@ -23,6 +23,9 @@ def validate_corpus(cfg):
         recorded = metadata.get(name + "_tokens")
         if recorded is not None and int(recorded) != tokens.size:
             raise ValueError(f"Token count in {path} disagrees with metadata")
+        if name == "train" and tokens.size < cfg.minimum_train_corpus_tokens:
+            raise ValueError(f"{path} has {tokens.size} tokens; this recipe requires at least "
+                             f"{cfg.minimum_train_corpus_tokens}. Prepare the larger corpus first.")
         if int(tokens[:min(tokens.size, 65536)].max()) >= cfg.model.valid_vocab_size:
             raise ValueError(f"Out-of-vocabulary token in {path}")
     return metadata

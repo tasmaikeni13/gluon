@@ -2,7 +2,7 @@
 
 These checks validate the implementation and launch path. They do not establish
 that Rocora improves convergence or pays for its residual measurements. The
-1B/2.5B-token experiments remain to be run.
+complete-budget pilot, 125M, 350M and 1B experiments remain to be run.
 
 ## Environment and numerical checks
 
@@ -10,7 +10,8 @@ The hardware is a Cloud TPU v4-32 slice: four hosts, four local JAX devices per
 host, 16 devices in each distributed model run. The tested runtime is Python
 3.10, JAX/jaxlib 0.6.2 and libtpu 0.0.17.
 
-The CPU suite passes 13 tests. It covers:
+The current CPU suite passes 33 tests. In addition to the checks recorded in
+[tpu-models.json](tpu-models.json), it covers:
 
 - Direct residual products against a dense H−S calculation at one fixed snapshot.
 - Exact Sophia-G equivalence when Rocora's residual weight is zero, including
@@ -20,10 +21,16 @@ The CPU suite passes 13 tests. It covers:
   budgets, and exclusion of the existing corpus's shared boundary document.
 - Checkpoint state/seed/code identity, report rejection of incomplete or
   confounded comparisons, and the 2.5B-token schedule beyond the int32 limit.
+- SOAP updates against an independent NumPy reference and fixed author vectors;
+  Muon momentum, BF16 outputs, matrix orientation and FP32 polynomial behavior.
+- Independent per-layer matrix state, exact optimizer checkpoint resume, masked
+  microbatch gradient accumulation, all five stage recipes and equal-token sweep
+  selection/accounting.
 - Exclusive worker locks, clean successful exit, cleanup on launcher disconnect,
   and lock release after the child has been reaped.
 
-The editable package builds and all four console entry points display help.
+The wheel builds with five registered console entry points, and each target
+module displays help.
 The retained Lean development was renamed and scoped in its documentation;
 it was not rebuilt as part of this TPU validation.
 
@@ -82,6 +89,24 @@ An independent uninterrupted five-update run produced **bitwise identical values
 for all 39 saved parameter/state/counter arrays** on the full 16-device pod.
 The resumed checkpoint therefore records step 5; the other fresh model checks
 record step 3. The state digest and comparison scope are in tpu-models.json.
+
+## SOAP, Muon and 1B memory checks
+
+[optimizer-validation.json](optimizer-validation.json) records the bounded checks
+added for the five-arm recipes. A 125M SOAP checkpoint resumed from step 3 to step
+12 and matched an uninterrupted 12-step run bitwise across all 60 saved arrays;
+the compared state digest and both source fingerprints are recorded there. A
+separate 125M Muon smoke test completed three updates. At 1B, Rocora's sampled
+core and coded residual curvature events compiled separately in 429.5 and 450.4
+seconds; the bounded run then completed three updates and evaluation. It processed
+393,216 training tokens and used no checkpoint. This confirms that the split
+curvature path fits on the pod for this implementation check.
+
+The new smoke checks used the existing 2.5B-token archive, its 10M heldout set,
+and the recorded 241-token shared-document prefix exclusion. The 1B smoke recipe
+temporarily permits that shorter archive; it does not validate the required 20B
+corpus or the 20B-token schedule. No full sweep or main training run was launched.
+None of these bounded losses are convergence evidence.
 
 The launcher also rejects a second job while the entire pod is locked. Source
 sync uses those same locks. No full-budget training was launched during this

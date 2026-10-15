@@ -12,3 +12,8 @@ checkpoints/
 *.bin
 *.prof
 *.log
+.rocora-managed
+configs/generated/
+configs/selected/
+build/
+dist/

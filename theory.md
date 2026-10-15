@@ -131,16 +131,49 @@ improve scaling, do nothing, or worsen it; the experiment must distinguish these
 
 ## Study and decision
 
-1. Pilot: 60,894,720-parameter GPT, one seed, exactly 1B processed training tokens
+1. Pilot: 60,894,720-parameter GPT, seeds 1337/1338/1339, exactly 1B processed training tokens
    from codelion/fineweb-edu-1B. The heldout split leaves about 991M unique training
    tokens, so this budget includes a small repeated portion.
 2. Follow-up: 124,373,760-parameter GPT, seeds 1337/1338/1339, exactly 2.5B processed
    FineWeb-Edu training tokens per run, using a larger corpus than the pilot subset.
-3. At both scales: AdamW, Sophia-G, Rocora; identical architectures, data ordering
+3. Larger recipes: 354,599,936 parameters and exactly 7B FineWeb-Edu tokens;
+   984,909,312 parameters and exactly 20B FineWeb-Edu tokens, each seed 1337.
+   The nominal 125M/350M/1B stages include SOAP and Muon practical baselines.
+   Data must come from sufficiently large, document-separated archives.
+4. At every scale: identical architectures, data ordering
    within seed, token budgets, evaluation windows and hardware. Sophia-G/Rocora
    share core/momentum/update hyperparameters; residual weight zero is an explicit
    implementation equivalence gate. Learning-rate sensitivity can be explored
    with equal tuning budgets, recorded separately from the matched residual study.
+
+The short-budget sweeps and checked-in starting rates are specified in
+[docs/optimizers.md](docs/optimizers.md). They allocate equal processed tokens
+and equal candidate counts, not equal compute time. Selection by Sophia's loss
+keeps Sophia/Rocora settings matched; independent selection is a different,
+explicitly labeled practical comparison. Tuning validation is not an independent
+test set. Short-budget ranking may not transfer to the main budget. The 350M/1B
+single-seed recipes cannot estimate between-seed variability.
+
+SOAP's Gram matrices are not the sampled-label Sophia core. SOAP maintains Adam
+moments in its preconditioner eigenbasis. Its QR basis refresh transports the
+first moment exactly (up to arithmetic) but only permutes the diagonal second
+moment, following the authors' implementation; it does not reconstruct a full
+rotated covariance. Axes larger than 2048 and all one-dimensional gain tensors
+are unpreconditioned. Per-layer matrix shapes are preserved even though model
+parameters are stored in stacks. Muon uses a finite BF16 quintic approximation
+to orthogonalization, with a separate AdamW update on tied input/output,
+position and normalization parameters. Neither optimizer implies an exact
+curvature inverse. FP32 bases/Grams and BF16 normal model operations introduce
+numerical error. Bounded runtime checks do not establish convergence or tuning
+quality at any scale.
+
+For Muon, an independent singular-value calculation checks the FP32 finite
+polynomial direction. The JAX BF16 implementation also matches nine small
+momentum/direction vectors generated from the pinned author implementation on
+CPU. This checks rounding behavior against that reference, not the optimizer's
+effect on final language-model loss. BF16 arithmetic and the finite polynomial
+remain approximations to exact orthogonalization; bounded tests do not establish
+their training quality.
 
 The primary comparison is **Rocora versus Sophia-G**. Report final heldout loss
 and perplexity at equal tokens, paired seed differences, variability across
