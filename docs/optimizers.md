@@ -134,8 +134,7 @@ control. --mode independent selects each arm separately for a practical tuned
 comparison; use rocora.report --comparison tuned, and do not attribute its
 Sophia/Rocora difference solely to the residual. Neither selection changes the
 main data, schedule, token budgets or seeds. Main runs restart from initialization
-and never resume a tuning checkpoint. The original 125M stage's completed-pilot
-gate remains in place for unbounded stage launches.
+and never resume a tuning checkpoint.
 
 Reports require every configured arm for every observed seed:
 

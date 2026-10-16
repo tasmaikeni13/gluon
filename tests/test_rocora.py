@@ -9,11 +9,12 @@ from jax.flatten_util import ravel_pytree
 import numpy as np
 import pytest
 
+from rocora.attention import flash_attention, reference_attention
 from rocora.checkpoint import save_checkpoint, load_checkpoint
 from rocora.config import ModelConfig, OptimizerConfig, ExperimentConfig, load_config
 from rocora.curvature import coded_probe, core_sample, residual_diagonal
 from rocora.data import TokenBatches
-from rocora.model import init_params, logits, loss_sum, decay_mask
+from rocora.model import init_params, logits, loss_sum, decay_mask, hidden
 from rocora.optimizers import init_state, update, commit_curvature
 from rocora.prepare import TokenWriter, is_validation_document
 
@@ -109,15 +110,16 @@ def test_checkpoint_preserves_all_channels_and_rejects_wrong_seed(tmp_path):
 
 def test_stage_counts_and_sophia_rocora_settings():
     root=Path(__file__).resolve().parents[1]
-    for path,expected in (("pilot60m.json",60_894_720),("scale125m.json",124_373_760)):
+    for path,expected in (("scale125m.json",124_373_760),("scale350m.json",354_599_936),("scale1b.json",984_909_312)):
         cfg=load_config(root/"configs"/path,"rocora")
         assert cfg.model.parameter_count==expected
         sophia=load_config(root/"configs"/path,"sophia")
         for field in ("learning_rate","beta1","beta2","rho","eps","weight_decay","core_interval"):
             assert getattr(cfg.optimizer,field)==getattr(sophia.optimizer,field)
     pod=json.loads((root/"configs/pod.json").read_text())
-    assert pod["seeds"]["pilot60m"]==[1337, 1338, 1339]
     assert pod["seeds"]["scale125m"]==[1337,1338,1339]
+    assert pod["seeds"]["scale350m"]==[1337]
+    assert pod["seeds"]["scale1b"]==[1337]
 
 
 def test_token_writer_and_document_split(tmp_path):
@@ -248,3 +250,376 @@ def test_worker_lock_and_disconnect_reap_child(tmp_path):
         if first.poll() is None:
             first.stdin.close()
             first.wait(timeout=10)
+
+
+def test_flash_attention_block_sizes_and_invocation(monkeypatch):
+    """Test FlashAttention BlockSizes configuration (block_q=128, block_k=1024, causal=True)."""
+    captured = {}
+
+    def mock_flash(q, k, v, causal=True, sm_scale=None, block_sizes=None):
+        captured["causal"] = causal
+        captured["sm_scale"] = sm_scale
+        captured["block_sizes"] = block_sizes
+        return jnp.zeros_like(q)
+
+    monkeypatch.setattr("jax.experimental.pallas.ops.tpu.flash_attention.flash_attention", mock_flash)
+
+    q = jnp.zeros((1, 8, 1024, 64), dtype=jnp.bfloat16)
+    k = jnp.zeros((1, 8, 1024, 64), dtype=jnp.bfloat16)
+    v = jnp.zeros((1, 8, 1024, 64), dtype=jnp.bfloat16)
+
+    flash_attention(q, k, v)
+
+    assert captured["causal"] is True
+    np.testing.assert_allclose(captured["sm_scale"], 1.0 / 8.0)
+    blocks = captured["block_sizes"]
+    assert blocks.block_q == 128
+    assert blocks.block_k == 1024
+    assert blocks.block_b == 1
+    assert blocks.block_k_major == 1024
+    assert blocks.block_q_major_dkv == 128
+    assert blocks.block_k_major_dkv == 1024
+    assert blocks.block_k_dkv == 1024
+    assert blocks.block_q_dkv == 128
+    assert blocks.block_k_major_dq == 1024
+    assert blocks.block_k_dq == 1024
+    assert blocks.block_q_dq == 128
+
+    # Verify tile clamp when sequence length is shorter than 1024
+    q512 = jnp.zeros((1, 8, 512, 64), dtype=jnp.bfloat16)
+    flash_attention(q512, q512, q512)
+    assert captured["block_sizes"].block_k == 512
+
+
+def test_model_attention_routing_forward_flash_vs_curvature_reference():
+    """Verify forward pass routes to FlashAttention and curvature pass routes to reference FP32 attention."""
+    cfg = ModelConfig(width=64, layers=1, heads=1, sequence_length=128,
+                      vocab_size=100, valid_vocab_size=100, attention="flash")
+    params = init_params(cfg, 1)
+    tokens = jnp.zeros((1, 128), dtype=jnp.int32)
+
+    # Forward pass with curvature=False routes to flash_attention. On CPU backend,
+    # Pallas flash_attention raises ValueError("Only interpret mode is supported on CPU backend").
+    routed_flash = False
+    try:
+        hidden(params, tokens, cfg, curvature=False)
+        routed_flash = True
+    except ValueError as e:
+        assert "Only interpret mode is supported on CPU backend" in str(e)
+        routed_flash = True
+    assert routed_flash
+
+    # Curvature pass with curvature=True routes strictly to reference_attention in FP32.
+    out = hidden(params, tokens, cfg, curvature=True)
+    assert out.shape == (1, 128, 64)
+    assert out.dtype == jnp.float32
+    assert np.all(np.isfinite(out))
+
+
+def test_reference_attention_causal_masking_strictly_lower_triangular():
+    """Verify reference_attention strictly zeroes upper triangular attention connections."""
+    seq_len = 8
+    d = 4
+    key = jax.random.PRNGKey(0)
+    kq, kk, kv = jax.random.split(key, 3)
+    q = jax.random.normal(kq, (1, 1, seq_len, d))
+    k = jax.random.normal(kk, (1, 1, seq_len, d))
+    v = jax.random.normal(kv, (1, 1, seq_len, d))
+
+    def out_at_i(v_in, i):
+        out = reference_attention(q, k, v_in, block=4)
+        return jnp.sum(out[0, 0, i, :])
+
+    grad_fn = jax.jit(jax.grad(out_at_i, argnums=0))
+
+    for i in range(seq_len):
+        g = grad_fn(v, i)[0, 0]
+        influence = jnp.linalg.norm(g, axis=-1)
+        # Position i cannot attend to future position j > i
+        for j in range(i + 1, seq_len):
+            assert float(influence[j]) == 0.0, f"Causal violation: token {i} attended to future token {j}"
+        # Position i must attend to current and past positions j <= i
+        for j in range(i + 1):
+            assert float(influence[j]) > 0.0
+
+
+def test_reference_attention_query_tiling_equivalence():
+    """Verify reference_attention query tiling produces identical results for block=64 vs block=128."""
+    seq_len = 256
+    batch = 2
+    heads = 2
+    d = 64
+    key = jax.random.PRNGKey(42)
+    k1, k2, k3 = jax.random.split(key, 3)
+    q = jax.random.normal(k1, (batch, heads, seq_len, d), dtype=jnp.float32)
+    k = jax.random.normal(k2, (batch, heads, seq_len, d), dtype=jnp.float32)
+    v = jax.random.normal(k3, (batch, heads, seq_len, d), dtype=jnp.float32)
+
+    out_64 = reference_attention(q, k, v, block=64)
+    out_128 = reference_attention(q, k, v, block=128)
+    out_256 = reference_attention(q, k, v, block=256)
+
+    np.testing.assert_allclose(np.asarray(out_64), np.asarray(out_128), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(out_64), np.asarray(out_256), rtol=1e-5, atol=1e-5)
+
+
+def test_reference_attention_jvp_autodiff():
+    """Verify reference_attention supports first- and second-order forward-mode automatic differentiation."""
+    seq_len = 32
+    batch = 1
+    heads = 2
+    d = 16
+    key = jax.random.PRNGKey(101)
+    keys = jax.random.split(key, 6)
+    q = jax.random.normal(keys[0], (batch, heads, seq_len, d), dtype=jnp.float32)
+    k = jax.random.normal(keys[1], (batch, heads, seq_len, d), dtype=jnp.float32)
+    v = jax.random.normal(keys[2], (batch, heads, seq_len, d), dtype=jnp.float32)
+    tq = jax.random.normal(keys[3], q.shape, dtype=jnp.float32)
+    tk = jax.random.normal(keys[4], k.shape, dtype=jnp.float32)
+    tv = jax.random.normal(keys[5], v.shape, dtype=jnp.float32)
+
+    f = lambda q_, k_, v_: jnp.sum(reference_attention(q_, k_, v_, block=16))
+    primals, tangents = jax.jvp(f, (q, k, v), (tq, tk, tv))
+    assert np.isfinite(primals)
+    assert np.isfinite(tangents)
+
+    # Second-order JVP-of-gradient required for Rocora's residual curvature measurements
+    grad_f = jax.grad(f, argnums=0)
+    primals_g, tangents_g = jax.jvp(grad_f, (q, k, v), (tq, tk, tv))
+    assert np.all(np.isfinite(primals_g))
+    assert np.all(np.isfinite(tangents_g))
+
+
+def test_attention_bench_scale_parameterization_and_flops():
+    """Verify attention_bench scale configs and theoretical FLOPs calculations."""
+    from rocora.benchmark import compute_attention_flops, SCALE_CONFIGS
+
+    assert SCALE_CONFIGS["125m"]["heads"] == 12
+    assert SCALE_CONFIGS["350m"]["heads"] == 16
+    assert SCALE_CONFIGS["1b"]["heads"] == 24
+
+    for scale, heads in (("125m", 12), ("350m", 16), ("1b", 24)):
+        flops = compute_attention_flops(batch=8, heads=heads, sequence=1024, head_dim=64)
+        expected_fwd_causal = 2 * 8 * heads * (1024 ** 2) * 64
+        expected_fwd_dense = 4 * 8 * heads * (1024 ** 2) * 64
+        assert flops["forward_causal"] == expected_fwd_causal
+        assert flops["forward"] == expected_fwd_dense
+        assert flops["backward_causal"] == int(2.5 * expected_fwd_causal)
+        assert flops["backward"] == int(2.5 * expected_fwd_dense)
+
+
+# ==============================================================================
+# Milestone 3: Pallas Optimizer Kernels & Fallback Engine Unit Tests
+# ==============================================================================
+
+def test_pallas_adamw_parity_and_tiling():
+    """Verify Pallas AdamW kernel numerical parity against XLA reference across shapes."""
+    from rocora.pallas_optimizers import pallas_adamw_update
+    from rocora.updates import adamw_update
+
+    lr, b1, b2, eps, wd, step, grad_scale = 1e-3, 0.965, 0.99, 1e-8, 0.01, 1, 0.8
+    corr1 = 1.0 / (1.0 - b1 ** step)
+    corr2 = 1.0 / (1.0 - b2 ** step)
+    c = jnp.asarray([lr, b1, b2, eps, wd, 0.0, corr1, corr2, 0.0, grad_scale], dtype=jnp.float32)
+
+    # Test 1: Multiple of 128 elements (e.g., 256)
+    p = jnp.linspace(-1.0, 1.0, 256, dtype=jnp.float32)
+    g = jnp.full(256, 0.05, dtype=jnp.float32)
+    m = jnp.full(256, 0.01, dtype=jnp.float32)
+    v = jnp.full(256, 0.02, dtype=jnp.float32)
+
+    xla_p, xla_m, xla_v = adamw_update(p, g, m, v, c)
+    pal_p, pal_m, pal_v = pallas_adamw_update(
+        p, g, m, v, lr, b1, b2, eps, wd, step=step, grad_scale=grad_scale, block_size=128
+    )
+
+    np.testing.assert_allclose(xla_p, pal_p, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_m, pal_m, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_v, pal_v, rtol=1e-6, atol=1e-7)
+
+    # Test 2: Non-multiple of 128 elements with padding boundary (e.g., 100 elements)
+    p_sub = p[:100]
+    g_sub = g[:100]
+    m_sub = m[:100]
+    v_sub = v[:100]
+
+    xla_p_sub, xla_m_sub, xla_v_sub = adamw_update(p_sub, g_sub, m_sub, v_sub, c)
+    pal_p_sub, pal_m_sub, pal_v_sub = pallas_adamw_update(
+        p_sub, g_sub, m_sub, v_sub, lr, b1, b2, eps, wd, step=step, grad_scale=grad_scale, block_size=128
+    )
+
+    np.testing.assert_allclose(xla_p_sub, pal_p_sub, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_m_sub, pal_m_sub, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_v_sub, pal_v_sub, rtol=1e-6, atol=1e-7)
+
+
+def test_pallas_sophia_parity_and_clipping():
+    """Verify Pallas Sophia-G kernel numerical parity and update clipping boundaries."""
+    from rocora.pallas_optimizers import pallas_sophia_update
+    from rocora.updates import sophia_update
+
+    lr, b1, b2, eps, rho, wd, grad_scale = 4e-4, 0.965, 0.99, 1e-15, 0.03, 0.1, 1.0
+    c = jnp.asarray([lr, b1, b2, eps, wd, rho, 0.0, 0.0, 0.0, grad_scale], dtype=jnp.float32)
+
+    p = jnp.array([1.0, -1.0, 0.5, -0.5], dtype=jnp.float32)
+    g = jnp.array([0.05, -0.05, 50.0, -50.0], dtype=jnp.float32)  # includes clipping-triggering values
+    m = jnp.zeros_like(p)
+    s = jnp.array([0.1, 0.1, 0.001, 0.001], dtype=jnp.float32)
+
+    xla_p, xla_m = sophia_update(p, g, m, s, c)
+    pal_p, pal_m = pallas_sophia_update(
+        p, g, m, s, lr, b1, b2, eps, rho, wd, grad_scale=grad_scale, block_size=128
+    )
+
+    np.testing.assert_allclose(xla_p, pal_p, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_m, pal_m, rtol=1e-6, atol=1e-7)
+
+
+def test_pallas_rocora_parity_and_scientific_control():
+    """Verify Pallas Rocora kernel parity and exact bitwise scientific control at residual_weight=0."""
+    from rocora.pallas_optimizers import pallas_rocora_update, pallas_sophia_update
+    from rocora.updates import rocora_update
+
+    lr, b1, b2, eps, rho, wd, grad_scale = 4e-4, 0.965, 0.99, 1e-15, 0.03, 0.1, 1.0
+
+    p = jnp.linspace(-2.0, 2.0, 256, dtype=jnp.float32)
+    g = jnp.full(256, 0.02, dtype=jnp.float32)
+    m = jnp.full(256, 0.005, dtype=jnp.float32)
+    s = jnp.full(256, 0.1, dtype=jnp.float32)
+    r = jnp.sin(jnp.linspace(0, 3.14, 256)) * 0.05
+
+    # 1. Parity with active residual curvature (residual_weight = 1.0)
+    c_active = jnp.asarray([lr, b1, b2, eps, wd, rho, 0.0, 0.0, 1.0, grad_scale], dtype=jnp.float32)
+    xla_p, xla_m = rocora_update(p, g, m, s, r, c_active)
+    pal_p, pal_m = pallas_rocora_update(
+        p, g, m, s, r, lr, b1, b2, eps, rho, wd, residual_weight=1.0, grad_scale=grad_scale, block_size=128
+    )
+    np.testing.assert_allclose(xla_p, pal_p, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(xla_m, pal_m, rtol=1e-6, atol=1e-7)
+
+    # 2. Strict scientific control: residual_weight = 0.0 must reproduce Sophia-G bitwise
+    pal_rocora_zero_p, pal_rocora_zero_m = pallas_rocora_update(
+        p, g, m, s, r, lr, b1, b2, eps, rho, wd, residual_weight=0.0, grad_scale=grad_scale, block_size=128
+    )
+    pal_sophia_p, pal_sophia_m = pallas_sophia_update(
+        p, g, m, s, lr, b1, b2, eps, rho, wd, grad_scale=grad_scale, block_size=128
+    )
+    # Bitwise exact parity
+    np.testing.assert_array_equal(pal_rocora_zero_p, pal_sophia_p)
+    np.testing.assert_array_equal(pal_rocora_zero_m, pal_sophia_m)
+    assert float(jnp.max(jnp.abs(pal_rocora_zero_p - pal_sophia_p))) == 0.0
+
+
+def test_pallas_muon_parity_and_semi_orthogonality():
+    """Verify Pallas Muon Newton-Schulz kernel numerical parity and semi-orthogonality."""
+    from rocora.pallas_optimizers import pallas_muon_direction
+    from rocora.matrix_optimizers import muon_direction
+
+    class MuonCfg:
+        muon_momentum = 0.95
+        muon_ns_steps = 5
+        muon_nesterov = True
+
+    rng = np.random.default_rng(1337)
+    g = jnp.asarray(rng.normal(size=(16, 32)).astype(np.float32))
+    m = jnp.zeros_like(g)
+
+    dir_xla, m_xla = muon_direction(g, m, MuonCfg())
+    dir_pal, m_pal = pallas_muon_direction(g, m, cfg=MuonCfg(), use_pallas=True)
+
+    np.testing.assert_allclose(dir_xla, dir_pal, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(m_xla, m_pal, rtol=1e-6, atol=1e-7)
+
+    # Verify spectral boundedness of normalized update
+    aspect = max(1, 32 / 16) ** 0.5
+    raw_dir = dir_pal / aspect
+    s_vals = jnp.linalg.svd(raw_dir, compute_uv=False)
+    assert jnp.all((s_vals >= 0.5) & (s_vals <= 1.5))
+    assert np.all(np.isfinite(dir_pal))
+
+
+def test_pallas_soap_parity_and_eigenspace_projection():
+    """Verify Pallas SOAP eigenspace projection and rotated Adam numerical parity."""
+    from rocora.pallas_optimizers import pallas_soap_leaf
+    from rocora.matrix_optimizers import soap_leaf, SoapFactors, _covariances, _initial_basis
+
+    shape = (8, 8)
+    p = jnp.ones(shape, dtype=jnp.float32)
+    g = jnp.full(shape, 0.02, dtype=jnp.float32)
+    m = jnp.zeros(shape, dtype=jnp.float32)
+    v = jnp.zeros(shape, dtype=jnp.float32)
+
+    cov = _covariances(g, (jnp.zeros(shape, jnp.float32), jnp.zeros(shape, jnp.float32)), 0.95)
+    factors = SoapFactors(cov, _initial_basis(cov))
+
+    class SoapCfg:
+        beta1 = 0.965
+        beta2 = 0.99
+        eps = 1e-15
+        soap_shampoo_beta = 0.95
+        soap_precondition_frequency = 10
+        soap_max_precondition_dim = 2048
+
+    cfg = SoapCfg()
+    xla_p, xla_m, xla_v, _ = soap_leaf(p, g, m, v, factors, 2, 1e-3, 0.1, cfg)
+    pal_p, pal_m, pal_v, _ = pallas_soap_leaf(p, g, m, v, factors, 2, 1e-3, 0.1, cfg, use_pallas=True)
+
+    np.testing.assert_allclose(xla_p, pal_p, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(xla_m, pal_m, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(xla_v, pal_v, rtol=1e-5, atol=1e-6)
+
+
+def test_should_use_pallas_fallback_policy():
+    """Verify should_use_pallas policy predicates across modes and backends."""
+    from rocora.pallas_optimizers import should_use_pallas
+
+    # 1. Explicit mode overrides
+    assert should_use_pallas("adamw", mode="xla") is False
+    assert should_use_pallas("adamw", mode="pallas") is True
+
+    # 2. Auto mode on CPU backend (always falls back to XLA)
+    cpu_device = jax.devices("cpu")[0]
+    assert should_use_pallas("adamw", device=cpu_device, mode="auto") is False
+    assert should_use_pallas("sophia", device=cpu_device, mode="auto") is False
+    assert should_use_pallas("rocora", device=cpu_device, mode="auto") is False
+    assert should_use_pallas("muon", device=cpu_device, mode="auto") is False
+    assert should_use_pallas("soap", device=cpu_device, mode="auto") is False
+
+
+def test_pallas_optimizer_update_dispatch():
+    """Verify high-level update() integrates use_pallas toggle and produces identical results."""
+    from rocora.config import OptimizerConfig
+    from rocora.optimizers import init_state, update
+
+    params = {"w": jnp.ones(128, dtype=jnp.float32)}
+    grads = {"w": jnp.full(128, 0.01, dtype=jnp.float32)}
+
+    cfg_xla = OptimizerConfig(name="adamw", learning_rate=1e-3, use_pallas=False)
+    cfg_pallas = OptimizerConfig(name="adamw", learning_rate=1e-3, use_pallas=True, pallas_mode="pallas")
+
+    state_xla = init_state(params, cfg_xla)
+    state_pal = init_state(params, cfg_pallas)
+
+    next_xla = update(state_xla, grads, 1e-3, cfg_xla, {"w": True})
+    next_pal = update(state_pal, grads, 1e-3, cfg_pallas, {"w": True})
+
+    np.testing.assert_allclose(next_xla.params["w"], next_pal.params["w"], atol=1e-5)
+
+
+def test_optimizer_bench_execution():
+    """Verify optimizer_bench executes across scales and measures zero error against references."""
+    from rocora.benchmark import optimizer_bench, SCALE_CONFIGS
+
+    for scale in ("125m", "350m", "1b"):
+        assert scale in SCALE_CONFIGS
+        assert "width" in SCALE_CONFIGS[scale]
+        assert "layers" in SCALE_CONFIGS[scale]
+
+    # Run microbenchmark for all 5 optimizers on CPU
+    res = optimizer_bench(size=128, repetitions=1, scale="125m")
+    assert res["scale"] == "125m"
+    assert res["width"] == 768
+    for opt in ("adamw", "sophia", "rocora", "soap", "muon"):
+        assert opt in res["results"]
+        assert res["results"][opt]["max_error"] < 1e-5
+        assert res["results"][opt]["speedup"] > 0

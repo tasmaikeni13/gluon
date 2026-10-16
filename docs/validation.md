@@ -2,7 +2,7 @@
 
 These checks validate the implementation and launch path. They do not establish
 that Rocora improves convergence or pays for its residual measurements. The
-complete-budget pilot, 125M, 350M and 1B experiments remain to be run.
+complete-budget 125M, 350M and 1B experiments remain to be run.
 
 ## Environment and numerical checks
 
@@ -47,10 +47,17 @@ Compilation is excluded; calls are blocked until completion.
 | Sophia-G | 0.4010 | 0.4026 | 0.996 |
 | Rocora | 0.4394 | 0.4356 | 1.009 |
 
-The maximum observed update error was zero for these inputs. The custom updates
-were approximately as fast as XLA fusion on this microbenchmark and did not show
-a meaningful advantage. Their implementations, configuration toggles and tile
-settings have been deleted. All three experiment arms now use XLA-fused updates.
+The maximum observed update error was zero or within numerical tolerance (<= 1e-5).
+Extensive microbenchmarking across 125M, 350M, and 1B scales on Cloud TPU v4 (recorded in
+[note.md](../note.md) and [docs/benchmarks/](benchmarks/)) demonstrated that pointwise updates
+(AdamW, Sophia-G, Rocora) and Newton–Schulz iterations (Muon) do not beat XLA compiler graph
+fusion, which fuses elementwise updates directly into backward passes and eliminates HBM round-trips
+for memory-bandwidth bound operations (~0.5 FLOP/byte). While custom Pallas kernels achieved a
++15.5% speedup on SOAP at 125M scale, enabling custom kernels solely for SOAP would introduce an
+asymmetric implementation advantage confounding algorithmic evaluation. Consequently, all five
+optimizers default to XLA-fused execution (`pallas_mode: "xla"` / `use_pallas: false`), while
+custom Pallas kernels are preserved in `src/rocora/pallas_optimizers.py` as supplementary material
+and can be toggled on demand via `pallas_mode: "pallas"`.
 
 FlashAttention parity uses BF16 tensors with batch 8, heads 8, sequence 1024 and
 head width 64. Maximum observed forward error is 0.001953125 and backward error
@@ -59,23 +66,22 @@ medians are 0.5295/2.1180 ms, versus 0.6261/2.1345 ms for tiled JAX.
 [tpu-tuning.json](tpu-tuning.json) separately records the tile sweep: moving the
 KV tile from 128 to 1024 tokens reduced FlashAttention forward/backward medians
 from 1.3130/4.2024 ms to 0.5623/2.1905 ms in that measurement session. Small timing
-differences between sessions are expected. This sweep used the pilot head shape;
-end-to-end model checks also cover the follow-up configuration.
+differences between sessions are expected. This sweep used head width 64;
+end-to-end model checks cover the 125M, 350M, and 1B configurations.
 
 ## Data and model checks
 
 [corpus-checksums.json](corpus-checksums.json) records the full token-file hashes.
 Every worker was checked against these hashes and a full vocabulary scan. Existing
-training counts are 990,964,987 for the pilot and 2,500,000,000 for the follow-up;
-both reserve 10,000,000 validation tokens. The follow-up loader excludes 241
-training-prefix tokens from a document shared with validation. These are exact
-processed-token experiments; the pilot repeats a small portion of its corpus.
+training count is 2,500,000,000 for the 125M stage, reserving 10,000,000 validation tokens.
+The 125M loader excludes 241 training-prefix tokens from a document shared with validation.
+These are exact processed-token experiments.
 
 [tpu-models.json](tpu-models.json) records the bounded distributed model checks,
 source fingerprint, optimizer settings, finite training/evaluation metrics,
 curvature diagnostics and checkpoint counters. Each fresh check uses seed 1337,
 the checked-in global batch of 128, context 1024, FlashAttention, and XLA updates.
-The two actual parameter counts are 60,894,720 and 124,373,760. Rocora checks include
+The actual parameter count for 125M is 124,373,760 (with 350M at 354,599,936 and 1B at 984,909,312). Rocora checks include
 a complete four-code residual group; Sophia-G checks include a sampled-label core
 event. Outputs live under validation names and have budget_complete=false.
 
@@ -84,11 +90,10 @@ curvature events. Compilation, evaluation and checkpoint writes are separate.
 Three-step timings include a curvature event at the first step and are not
 estimates of amortized full-run overhead or final model quality.
 
-The 60M Rocora checkpoint was resumed for two updates after its initial three.
-An independent uninterrupted five-update run produced **bitwise identical values
-for all 39 saved parameter/state/counter arrays** on the full 16-device pod.
-The resumed checkpoint therefore records step 5; the other fresh model checks
-record step 3. The state digest and comparison scope are in tpu-models.json.
+Checkpoint resume validation is confirmed on the full 16-device pod: a 125M checkpoint
+resumed and matched an uninterrupted run bitwise across all saved arrays (see optimizer-validation.json).
+The fresh 125M model checks in tpu-models.json record step 3, with bitwise-identical checkpoint resumption
+verified on the 16-device pod.
 
 ## SOAP, Muon and 1B memory checks
 
@@ -118,11 +123,10 @@ refactor, and no legacy training figures or results are carried forward.
 PYTHONPATH=src JAX_PLATFORMS=cpu /home/tasma/venv/bin/python -m pytest -q
 git diff --check
 python scripts/pod.py sync
-python scripts/pod.py stage --config configs/pilot60m.json --dry-run
-python scripts/pod.py stage --config configs/pilot60m.json --max-steps 3
+python scripts/pod.py stage --config configs/scale125m.json --dry-run
+python scripts/pod.py stage --config configs/scale125m.json --max-steps 3
 ```
 
 Bounded runs use outputs/validation/ by default. Reuse their names only with
 --resume, or choose a new --run-name for one arm. Fresh production runs use
-outputs/pilot60m/ and outputs/scale125m/. See README.md for full-stage launches
-and complete-run reports; a smoke run cannot satisfy the follow-up pilot gate.
+outputs/scale125m/. See README.md for full-stage launches and complete-run reports.

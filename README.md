@@ -23,25 +23,20 @@ estimator, its limits, and the experimental decision criteria.
 
 | Stage | Actual parameters | Loss tokens processed | Seeds | Optimizers |
 |---|---:|---:|---|---|
-| Pilot | 60,894,720 | 1,000,000,000 | 1337, 1338, 1339 | AdamW, Sophia-G, Rocora |
 | 125M | 124,373,760 | 2,500,000,000 each | 1337, 1338, 1339 | All five |
 | 350M | 354,599,936 | 7,000,000,000 each | 1337 | All five |
 | 1B | 984,909,312 | 20,000,000,000 each | 1337 | All five |
 
 All GPT models use a 1024-token context, GPT-2 BPE, tied embeddings, smooth GELU,
 and no dropout. The global batch is 128 sequences. The final batch is masked so
-the loss-token budget is exact. Initial learning rates are configurable pilot
+the loss-token budget is exact. Initial learning rates are configurable baseline
 settings, rather than claimed optimal values. Sophia-G and Rocora deliberately
 share their settings to isolate the residual's effect.
 
-The pilot uses [codelion/fineweb-edu-1B](https://huggingface.co/datasets/codelion/fineweb-edu-1B).
-The existing pod token archive contains 990,964,987 training tokens after reserving
-10M validation tokens; the 1B processed-token budget includes a small repeat.
-The follow-up uses 2.5B training tokens from
+The 125M stage uses 2.5B training tokens from
 [FineWeb-Edu sample-10BT](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu).
-It cannot obtain 2.5B unique tokens from the pilot's 1B subset.
 The existing 2.5B archive divides one document across the validation/training
-boundary. The follow-up configuration excludes its remaining 241-token training
+boundary. The 125M configuration excludes its remaining 241-token training
 prefix to prevent that overlap. This exclusion is recorded; the exact 2.5B
 processed-token budget can repeat a few remaining tokens. Fresh content-hash
 preparation avoids this boundary split and does not need the exclusion.
@@ -81,15 +76,14 @@ workers. This preserves remote token archives and outputs:
 
 ```bash
 python scripts/pod.py sync
-python scripts/pod.py stage --config configs/pilot60m.json --dry-run
+python scripts/pod.py stage --config configs/scale125m.json --dry-run
 ```
 
 The following commands launch full training and are provided for later use.
-After completing the pilot gate and preparing the needed data, launch a stage
+After preparing the needed data, launch a stage
 (prefer selected sweep recipes as described in docs/optimizers.md):
 
 ```bash
-python scripts/pod.py stage --config configs/pilot60m.json
 python scripts/pod.py stage --config configs/scale125m.json
 python scripts/pod.py stage --config configs/scale350m.json
 python scripts/pod.py stage --config configs/scale1b.json
@@ -98,8 +92,8 @@ python scripts/pod.py stage --config configs/scale1b.json
 To resume a stage, append --resume. For one arm or a bounded hardware smoke run:
 
 ```bash
-python scripts/pod.py run --config configs/pilot60m.json --optimizer rocora --seed 1337
-python scripts/pod.py run --config configs/pilot60m.json --optimizer rocora --max-steps 3 --run-name smoke60m-rocora
+python scripts/pod.py run --config configs/scale125m.json --optimizer rocora --seed 1337
+python scripts/pod.py run --config configs/scale125m.json --optimizer rocora --max-steps 3 --run-name smoke125m-rocora
 ```
 
 A bounded smoke run retains the experiment's schedule, records its actual token
@@ -147,7 +141,6 @@ Their source/tokenizer/counts are checked at startup. Check every token and the
 file hashes with:
 
 ```bash
-PYTHONPATH=src JAX_PLATFORMS=cpu python -m rocora.preflight --config configs/pilot60m.json
 PYTHONPATH=src JAX_PLATFORMS=cpu python -m rocora.preflight --config configs/scale125m.json
 ```
 
@@ -155,13 +148,12 @@ For a new archive, use the streaming preparer, which resolves a dataset revision
 separators, separates documents by content hash, and records token/file hashes:
 
 ```bash
-PYTHONPATH=src python -m rocora.prepare --dataset codelion/fineweb-edu-1B --output data/pilot
 PYTHONPATH=src python -m rocora.prepare --dataset HuggingFaceFW/fineweb-edu --dataset-config sample-10BT --train-limit 2500000000 --output data/scale
 ```
 
 Point each configuration's train_file, validation_file and data_metadata at the
 prepared files and copy them to every worker. Keep validation documents out of
-training. For a freshly prepared follow-up archive, set
+training. For a freshly prepared 125M archive, set
 train_skip_initial_document to false; that option repairs the existing archive's
 boundary split. Every arm sees the same sequence permutation for a given seed.
 
@@ -173,7 +165,6 @@ After complete matched runs, compare equal-token losses and interpolated
 equal-time losses:
 
 ```bash
-PYTHONPATH=src python -m rocora.report --root outputs/pilot60m
 PYTHONPATH=src python -m rocora.report --root outputs/scale125m
 ```
 

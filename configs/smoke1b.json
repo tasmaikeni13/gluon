@@ -1,0 +1,77 @@
+{
+  "stage": "scale1b",
+  "model": {
+    "width": 1536,
+    "layers": 32,
+    "heads": 24,
+    "sequence_length": 1024,
+    "attention": "flash",
+    "loss_chunk": 128
+  },
+  "train_tokens": 2500000000,
+  "global_batch_size": 128,
+  "warmup_tokens": 400000000,
+  "train_file": "/home/tasma/data/fw25/fineweb_train_2_5B.npy",
+  "validation_file": "/home/tasma/data/fw25/fineweb_valid.npy",
+  "data_metadata": "/home/tasma/data/fw25/fineweb_metadata.json",
+  "dataset": "HuggingFaceFW/fineweb-edu",
+  "train_skip_initial_document": true,
+  "optimizer": {
+    "core_interval": 20,
+    "residual_interval": 40,
+    "curvature_batch_per_device": 1,
+    "probe_codes": 4
+  },
+  "optimizers": {
+    "adamw": {
+      "learning_rate": 0.0006,
+      "beta1": 0.9,
+      "beta2": 0.95,
+      "eps": 1e-08
+    },
+    "sophia": {
+      "learning_rate": 0.0004,
+      "beta1": 0.965,
+      "beta2": 0.99,
+      "rho": 0.03
+    },
+    "rocora": {
+      "learning_rate": 0.0004,
+      "beta1": 0.965,
+      "beta2": 0.99,
+      "rho": 0.03,
+      "residual_weight": 1.0
+    },
+    "soap": {
+      "learning_rate": 0.003,
+      "beta1": 0.95,
+      "beta2": 0.95,
+      "eps": 1e-08,
+      "soap_precondition_frequency": 10,
+      "soap_max_precondition_dim": 2048,
+      "soap_shampoo_beta": 0.95
+    },
+    "muon": {
+      "learning_rate": 0.02,
+      "beta1": 0.9,
+      "beta2": 0.95,
+      "eps": 1e-08,
+      "muon_momentum": 0.95,
+      "muon_ns_steps": 5,
+      "muon_aux_lr": 0.0006
+    }
+  },
+  "arms": [
+    "adamw",
+    "sophia",
+    "rocora",
+    "soap",
+    "muon"
+  ],
+  "seeds": [
+    1337
+  ],
+  "microbatch_per_device": 1,
+  "minimum_train_corpus_tokens": 0,
+  "eval_tokens": 1048576
+}

@@ -5,11 +5,26 @@ from pathlib import Path
 import numpy as np
 
 
-def validate_corpus(cfg):
+class CorpusPathError(ValueError, AssertionError):
+    """Raised when training and validation paths are not distinct."""
+    pass
+
+
+def validate_corpus(cfg, allow_missing: bool = False):
     train_path, val_path = Path(cfg.train_file), Path(cfg.validation_file)
     if train_path.resolve() == val_path.resolve():
-        raise ValueError("Training and validation files must be different")
-    metadata = json.loads(Path(cfg.data_metadata).read_text())
+        raise CorpusPathError("Training and validation files must be different")
+    assert train_path != val_path, "Training and validation files must be different"
+    meta_path = Path(cfg.data_metadata)
+    if allow_missing and (not meta_path.exists() or not train_path.exists() or not val_path.exists()):
+        return {
+            "dataset": cfg.dataset,
+            "status": "unmaterialized",
+            "train_file": str(train_path),
+            "validation_file": str(val_path),
+            "data_metadata": str(meta_path),
+        }
+    metadata = json.loads(meta_path.read_text())
     if metadata.get("dataset") != cfg.dataset:
         raise ValueError(f"Wrong dataset provenance: {metadata.get('dataset')} != {cfg.dataset}")
     if not str(metadata.get("tokenizer", "")).lower().startswith("gpt2"):
@@ -36,7 +51,7 @@ class TokenBatches:
 
     A training budget is tokens processed, rather than unique corpus size. On
     the final step a binary mask removes surplus loss tokens without changing
-    compiled shapes. Epoch reshuffling handles the pilot's ~991M-token corpus.
+    compiled shapes. Epoch reshuffling handles training budgets exceeding unique corpus size.
     """
 
     def __init__(self, path, sequence, global_batch, process_count=1,

@@ -226,16 +226,6 @@ print(json.dumps(info,sort_keys=True))
         else:
             config = json.loads((ROOT / args.config).read_text())
             stage = config["stage"]
-            if stage == "scale125m" and not args.dry_run and not args.max_steps:
-                # The planned scientific sequence is pilot first, then scale-up.
-                check = ("import json,pathlib; "
-                         "runs=[pathlib.Path('outputs/pilot60m')/(a+'-s1337')/'metrics.jsonl' "
-                         "for a in ('adamw','sophia','rocora')]; "
-                         "assert all(p.exists() and any(json.loads(l).get('budget_complete',False) "
-                         "for l in p.read_text().splitlines()) for p in runs), "
-                         "'Complete the three 1B-token pilot arms before the full 125M stage'")
-                command = "cd " + shlex.quote(pod["remote_dir"]) + " && " + shlex.join([pod["python"],"-c",check])
-                subprocess.run(["ssh",pod["workers"][0],command],check=True)
             for seed in config.get("seeds", pod["seeds"].get(stage, [1337])):
                 for optimizer in config.get("arms", ("adamw", "sophia", "rocora")):
                     print(f"Starting {stage}: {optimizer}, seed {seed}", flush=True)

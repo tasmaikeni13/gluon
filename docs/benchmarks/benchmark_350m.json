@@ -1,0 +1,158 @@
+{
+  "jax": "0.6.2",
+  "devices": [
+    "TPU_0(process=0,(0,0,0,0))",
+    "TPU_1(process=0,(1,0,0,0))",
+    "TPU_2(process=0,(0,1,0,0))",
+    "TPU_3(process=0,(1,1,0,0))"
+  ],
+  "size": 8388608,
+  "sequence": 1024,
+  "batch": 8,
+  "scale": "350m",
+  "heads": null,
+  "optimizer": null,
+  "updates": {
+    "adamw": {
+      "xla": {
+        "median_ms": 0.45008500455878675,
+        "min_ms": 0.4325199988670647
+      }
+    },
+    "sophia": {
+      "xla": {
+        "median_ms": 0.40897500002756715,
+        "min_ms": 0.39221998304128647
+      }
+    },
+    "rocora": {
+      "xla": {
+        "median_ms": 0.4411850241012871,
+        "min_ms": 0.43248001020401716
+      }
+    }
+  },
+  "optimizer_bench": {
+    "scale": "350m",
+    "size": 8388608,
+    "width": 1024,
+    "repetitions": 20,
+    "results": {
+      "adamw": {
+        "xla": {
+          "median_ms": 0.44177999370731413,
+          "min_ms": 0.43498899322003126
+        },
+        "pallas": {
+          "median_ms": 0.9094649867620319,
+          "min_ms": 0.8937399834394455
+        },
+        "speedup": 0.48575811068899244,
+        "max_error": 0.0
+      },
+      "sophia": {
+        "xla": {
+          "median_ms": 0.4087799752596766,
+          "min_ms": 0.39724999805912375
+        },
+        "pallas": {
+          "median_ms": 0.8856595086399466,
+          "min_ms": 0.8660900057293475
+        },
+        "speedup": 0.46155432338485824,
+        "max_error": 0.0
+      },
+      "rocora": {
+        "xla": {
+          "median_ms": 0.44408501707948744,
+          "min_ms": 0.4293599631637335
+        },
+        "pallas": {
+          "median_ms": 1.0708744812291116,
+          "min_ms": 1.055120024830103
+        },
+        "speedup": 0.4146938085309331,
+        "max_error": 0.0
+      },
+      "soap": {
+        "shape": [
+          1024,
+          1024
+        ],
+        "xla": {
+          "median_ms": 1.1049899912904948,
+          "min_ms": 1.085829979274422
+        },
+        "pallas": {
+          "median_ms": 1.0933350131381303,
+          "min_ms": 1.0819800081662834
+        },
+        "speedup": 1.0106600246148818,
+        "max_error": 0.0
+      },
+      "muon": {
+        "shape": [
+          1024,
+          1024
+        ],
+        "xla": {
+          "median_ms": 0.42159497388638556,
+          "min_ms": 0.39534003008157015
+        },
+        "pallas": {
+          "median_ms": 0.5432949983514845,
+          "min_ms": 0.5282099591568112
+        },
+        "speedup": 0.7759964202976792,
+        "max_error": 0.0
+      }
+    }
+  },
+  "attention": {
+    "scale": "350m",
+    "batch": 8,
+    "heads": 16,
+    "sequence": 1024,
+    "head_dim": 64,
+    "theoretical_flops": {
+      "forward": 34359738368,
+      "forward_causal": 17179869184,
+      "backward": 85899345920,
+      "backward_causal": 42949672960
+    },
+    "max_forward_error": 0.001953125,
+    "max_backward_error": 2.3865140974521637e-08,
+    "xla_forward": {
+      "median_ms": 1.1481799883767962,
+      "min_ms": 1.13903998862952,
+      "tflops_per_sec": 15.08276211151342,
+      "tflops_per_sec_median": 14.96269692723656,
+      "dense_tflops_per_sec": 30.16552422302684,
+      "dense_tflops_per_sec_median": 29.92539385447312
+    },
+    "flash_forward": {
+      "median_ms": 0.9199000196531415,
+      "min_ms": 0.8986800094135106,
+      "tflops_per_sec": 19.116781283709415,
+      "tflops_per_sec_median": 18.67580043152718,
+      "dense_tflops_per_sec": 38.23356256741883,
+      "dense_tflops_per_sec_median": 37.35160086305436
+    },
+    "xla_backward": {
+      "median_ms": 4.382498998893425,
+      "min_ms": 4.367798974271864,
+      "tflops_per_sec": 9.833253135730669,
+      "tflops_per_sec_median": 9.800269885023303,
+      "dense_tflops_per_sec": 19.666506271461337,
+      "dense_tflops_per_sec_median": 19.600539770046606
+    },
+    "flash_backward": {
+      "median_ms": 4.1201094863936305,
+      "min_ms": 4.10989997908473,
+      "tflops_per_sec": 10.450296401024543,
+      "tflops_per_sec_median": 10.424400881053828,
+      "dense_tflops_per_sec": 20.900592802049086,
+      "dense_tflops_per_sec_median": 20.848801762107655
+    }
+  }
+}

@@ -11,9 +11,9 @@ OPTIMIZERS = ("adamw", "sophia", "rocora", "soap", "muon")
 
 @dataclass(frozen=True)
 class ModelConfig:
-    width: int = 512
-    layers: int = 11
-    heads: int = 8
+    width: int = 768
+    layers: int = 12
+    heads: int = 12
     sequence_length: int = 1024
     vocab_size: int = 50304
     valid_vocab_size: int = 50257
@@ -70,10 +70,14 @@ class OptimizerConfig:
     muon_nesterov: bool = True
     muon_ns_steps: int = 5
     muon_aux_lr: float = 6e-4
+    use_pallas: bool = False
+    pallas_mode: str = "xla"
 
     def validate(self):
         if self.name not in OPTIMIZERS:
             raise ValueError(f"optimizer must be one of {OPTIMIZERS}")
+        if self.pallas_mode not in ("auto", "pallas", "xla"):
+            raise ValueError(f"pallas_mode must be one of ('auto', 'pallas', 'xla'), got {self.pallas_mode}")
         if not all(0 <= b < 1 for b in (self.beta1, self.beta2, self.beta_residual)):
             raise ValueError("EMA betas must be in [0, 1)")
         if min(self.learning_rate, self.eps, self.rho) <= 0:
@@ -98,11 +102,11 @@ class OptimizerConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    stage: str = "pilot60m"
+    stage: str = "scale125m"
     model: ModelConfig = field(default_factory=ModelConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     seed: int = 1337
-    train_tokens: int = 1_000_000_000
+    train_tokens: int = 3_000_000_000
     global_batch_size: int = 128
     warmup_tokens: int = 50_000_000
     min_lr_fraction: float = 0.1
@@ -120,8 +124,8 @@ class ExperimentConfig:
     seeds: tuple = (1337,)
     arms: tuple = ("adamw", "sophia", "rocora")
     purpose: str = "main"
-    # Zero allows the historical pilot's small corpus repeat. New recipes fail
-    # before launch if a short archive would silently repeat billions of tokens.
+    # Minimum required unique tokens in corpus. Fails before launch if a short
+    # archive would silently repeat tokens.
     minimum_train_corpus_tokens: int = 0
 
     def validate(self):

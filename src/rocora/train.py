@@ -156,7 +156,7 @@ def main(argv=None):
         raise ValueError(f"Global batch {cfg.global_batch_size} is not divisible by {count} devices")
     if cfg.optimizer.curvature_batch_per_device > cfg.global_batch_size // count:
         raise ValueError("Curvature batch cannot exceed the training batch per device")
-    data_metadata = validate_corpus(cfg)
+    data_metadata = validate_corpus(cfg, allow_missing=args.dry_run)
     fingerprint = bytes.fromhex(identity(cfg) + _code_digest())
     fingerprints = np.asarray(multihost_utils.process_allgather(np.frombuffer(fingerprint, np.uint8)))
     if not np.all(fingerprints.reshape(hosts, -1) == fingerprints.reshape(hosts, -1)[0]):
@@ -169,7 +169,10 @@ def main(argv=None):
     if host == 0:
         print(json.dumps(summary, sort_keys=True), flush=True)
     if args.dry_run:
-        return
+        params = init_params(cfg.model, cfg.seed)
+        assert sum(p.size for p in jax.tree.leaves(params)) == cfg.model.parameter_count, "Architecture parameter count mismatch"
+        del params
+        return 0
     run_name = args.run_name or (("validation/" if args.max_steps else "")
                                + f"{cfg.stage}/{args.optimizer}-s{cfg.seed}")
     run_dir = Path(cfg.output_dir) / run_name

@@ -55,7 +55,7 @@ numerical parity, and failure handling.
 PYTHONPATH=src JAX_PLATFORMS=cpu /home/tasma/venv/bin/python -m pytest -q
 git diff --check
 python scripts/pod.py sync
-python scripts/pod.py stage --config configs/pilot60m.json --dry-run
+python scripts/pod.py stage --config configs/scale125m.json --dry-run
 ```
 
 For changes to shapes, attention, curvature, or optimizer updates, run bounded

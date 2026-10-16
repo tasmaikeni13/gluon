@@ -131,13 +131,10 @@ improve scaling, do nothing, or worsen it; the experiment must distinguish these
 
 ## Study and decision
 
-1. Pilot: 60,894,720-parameter GPT, seeds 1337/1338/1339, exactly 1B processed training tokens
-   from codelion/fineweb-edu-1B. The heldout split leaves about 991M unique training
-   tokens, so this budget includes a small repeated portion.
-2. Follow-up: 124,373,760-parameter GPT, seeds 1337/1338/1339, exactly 2.5B processed
-   FineWeb-Edu training tokens per run, using a larger corpus than the pilot subset.
-3. Larger recipes: 354,599,936 parameters and exactly 7B FineWeb-Edu tokens;
-   984,909,312 parameters and exactly 20B FineWeb-Edu tokens, each seed 1337.
+1. 125M scale: 124,373,760-parameter GPT, seeds 1337/1338/1339, exactly 2.5B processed
+   FineWeb-Edu training tokens per run.
+2. 350M scale: 354,599,936 parameters and exactly 7B FineWeb-Edu tokens, seed 1337.
+3. 1B scale: 984,909,312 parameters and exactly 20B FineWeb-Edu tokens, seed 1337.
    The nominal 125M/350M/1B stages include SOAP and Muon practical baselines.
    Data must come from sufficiently large, document-separated archives.
 4. At every scale: identical architectures, data ordering
@@ -183,7 +180,7 @@ compile/evaluation/checkpoint costs separately. A token-efficiency gain that
 disappears at equal training time has not paid its compute cost under that recipe.
 
 AdamW establishes practical competitiveness. Beating AdamW alone cannot attribute
-the improvement to R. One favorable pilot cannot establish reproducibility or
+the improvement to R. One favorable run cannot establish reproducibility or
 superiority at larger scale; a null or negative residual result is a valid answer
 to the stated question.
 

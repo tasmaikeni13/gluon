@@ -6,6 +6,8 @@ import jax.numpy as jnp
 
 from .updates import adamw_update, sophia_update, rocora_update
 from .matrix_optimizers import init_soap_factors, is_layer_stack, matrix_update
+from .config import OptimizerConfig
+from .pallas_optimizers import should_use_pallas, pallas_optimizer_update
 
 
 class OptimizerState(NamedTuple):
@@ -55,6 +57,10 @@ def commit_curvature(state, core_sample, residual_sample, cfg):
 
 
 def update(state, grads, lr, cfg, decay, gradient_scale=1.0):
+    mode = getattr(cfg, "pallas_mode", "xla")
+    use_pallas = (getattr(cfg, "use_pallas", False) or mode == "pallas") and mode != "xla"
+    if use_pallas and should_use_pallas(cfg.name, mode=mode):
+        return pallas_optimizer_update(state, grads, lr, cfg, decay, gradient_scale)
     if cfg.name in ("soap", "muon"):
         return matrix_update(state, grads, lr, cfg, decay, gradient_scale)
     opt = state.optimizer
