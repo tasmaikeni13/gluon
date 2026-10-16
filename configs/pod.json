@@ -4,5 +4,5 @@
   "remote_dir": "/home/tasma/rocora",
   "python": "/home/tasma/venv/bin/python",
   "lock_file": "/home/tasma/.cache/rocora/pod-worker.lock",
-  "seeds": {"scale125m": [1337, 1338, 1339], "scale350m": [1337], "scale1b": [1337]}
+  "seeds": {"scale125m": [1337, 1338, 1339, 1340, 1341], "scale350m": [1337], "scale1b": [1337]}
 }

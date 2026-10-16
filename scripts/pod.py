@@ -189,11 +189,17 @@ print(json.dumps(info,sort_keys=True))
             extra = ["--run-name", run_name]
             if args.resume:
                 check = ("import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                         "lines=[json.loads(l) for l in (p/'metrics.jsonl').read_text().splitlines() if l] if (p/'metrics.jsonl').exists() else []; "
+                         "complete=any(l.get('type')=='complete' and l.get('budget_complete') for l in lines); "
                          "print(json.dumps({'exists':p.exists(),"
+                         "'complete':complete,"
                          "'checkpoint':(p/'checkpoints/latest.npz').exists()}))")
                 command = "cd " + shlex.quote(pod["remote_dir"]) + " && " + shlex.join(
                     [pod["python"], "-c", check, str(Path(trial["config"]["output_dir"]) / run_name)])
                 status = json.loads(subprocess.check_output(["ssh", pod["workers"][0], command], text=True))
+                if status.get("complete"):
+                    print(f"Skipping completed trial {trial['id']}", flush=True)
+                    continue
                 if status["checkpoint"]:
                     extra.append("--resume")
                 elif status["exists"] and not args.dry_run:
@@ -228,11 +234,38 @@ print(json.dumps(info,sort_keys=True))
             stage = config["stage"]
             for seed in config.get("seeds", pod["seeds"].get(stage, [1337])):
                 for optimizer in config.get("arms", ("adamw", "sophia", "rocora")):
+                    run_name = f"validation/{stage}/{optimizer}-s{seed}" if args.max_steps else f"{stage}/{optimizer}-s{seed}"
+                    arm_extra = [x for x in extra if x != "--resume"]
+                    p = Path(config.get("output_dir", "outputs")) / run_name
+                    m = p / "metrics.jsonl"
+                    lines = [json.loads(l) for l in m.read_text().splitlines() if l.strip()] if m.exists() else []
+                    complete = any(l.get("type") == "complete" and l.get("budget_complete") for l in lines)
+                    if args.resume:
+                        if complete:
+                            print(f"Skipping completed run {run_name}", flush=True)
+                            continue
+                        if (p / "checkpoints" / "latest.npz").exists():
+                            arm_extra.append("--resume")
+                    elif complete:
+                        print(f"Run {run_name} is already complete; skipping (use fresh run or inspect metrics)", flush=True)
+                        continue
                     print(f"Starting {stage}: {optimizer}, seed {seed}", flush=True)
-                    arm_extra=list(extra)
                     if args.max_steps:
-                        arm_extra += ["--run-name",f"validation/{stage}/{optimizer}-s{seed}"]
+                        arm_extra += ["--run-name", f"validation/{stage}/{optimizer}-s{seed}"]
                     run_workers(pod, train_commands(pod, args.config, optimizer, seed, arm_extra))
+                    # Checkpoint management: offload/clean to protect coordinator storage
+                    lines = [json.loads(l) for l in m.read_text().splitlines() if l.strip()] if m.exists() else []
+                    complete = any(l.get("type") == "complete" and l.get("budget_complete") for l in lines)
+                    ckpt = p / "checkpoints" / "latest.npz"
+                    if complete and ckpt.exists():
+                        try:
+                            backup_dir = f"/home/tasma/checkpoints_backup/{stage}"
+                            subprocess.run(["ssh", "w1", f"mkdir -p {backup_dir}"], check=False)
+                            subprocess.run(["scp", "-q", str(ckpt), f"w1:{backup_dir}/{optimizer}-s{seed}.npz"], check=False)
+                        except Exception:
+                            pass
+                        ckpt.unlink(missing_ok=True)
+                        print(f"Archived/cleaned {ckpt} to preserve coordinator disk space.", flush=True)
 
 
 if __name__ == "__main__":

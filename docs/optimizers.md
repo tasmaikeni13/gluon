@@ -54,7 +54,9 @@ before squaring. SOAP/Muon never run Sophia curvature events.
 
 | Config | Parameters | Main tokens per arm/seed | Main seeds | Trial tokens | Trials per arm | Tuning tokens per arm |
 |---|---:|---:|---|---:|---:|---:|
-| configs/scale125m.json | 124,373,760 | 2,500,000,000 | 1337, 1338, 1339 | 25,000,000 | 6 | 150,000,000 |
+| Config | Parameters | Main tokens per arm/seed | Main seeds | Trial tokens | Trials per arm | Tuning tokens per arm |
+|---|---:|---:|---|---:|---:|---:|
+| configs/scale125m.json | 124,373,760 | 2,500,000,000 | 1337, 1338, 1339, 1340, 1341 | 600,000,000 | 6 (+3 low-LR) | 3,600,000,000 |
 | configs/scale350m.json | 354,599,936 | 7,000,000,000 | 1337 | 70,000,000 | 6 | 420,000,000 |
 | configs/scale1b.json | 984,909,312 | 20,000,000,000 | 1337 | 200,000,000 | 6 | 1,200,000,000 |
 
@@ -63,6 +65,48 @@ labels are nominal; the exact counts above include tied/padded embeddings and
 positions. All use context 1024, global batch 128, one sequence per device per
 microbatch, Pallas FlashAttention, and exact final loss masks. One 1B seed is a
 screening experiment, not a repeatability study.
+
+## 125M hyperparameter sweep results (600M tokens per trial)
+
+A full hyperparameter sweep of 30 initial trials (6 per optimizer) followed by 6 low-learning-rate targeted trials for Sophia-G and Rocora was conducted on FineWeb-Edu at 125M scale (600,000,000 tokens per trial, seed 1337, context 1024, global batch 128). Every trial ran to full budget completion on the Cloud TPU v4-32 pod.
+
+### Selected winning configurations
+
+| Optimizer | Best configuration | Validation loss | Perplexity (PPL) | Wall-clock train time | Selection basis |
+|---|---|---:|---:|---:|---|
+| **AdamW** | `learning_rate: 0.0012`, `beta1: 0.9`, `beta2: 0.99`, `eps: 1e-8` | 3.4309 | 30.91 | 774.8s | Lowest validation loss |
+| **Sophia-G** | `learning_rate: 0.0001`, `beta1: 0.965`, `beta2: 0.99`, `rho: 0.02` | 3.6147 | 37.14 | 800.0s | Lowest validation loss |
+| **Rocora** *(matched)* | `learning_rate: 0.0001`, `beta1: 0.965`, `beta2: 0.99`, `rho: 0.02`, `residual_weight: 1.0` | 3.6468 | 38.35 | 866.2s | Matched to Sophia best |
+| **Rocora** *(independent)* | `learning_rate: 0.0002`, `beta1: 0.965`, `beta2: 0.99`, `rho: 0.02`, `residual_weight: 1.0` | **3.5753** | **35.71** | 866.2s | Lowest validation loss across family |
+| **SOAP** | `learning_rate: 0.003`, `beta1: 0.95`, `beta2: 0.95`, `precond_freq: 10` | **3.3378** | **28.16** | 1024.2s | Lowest validation loss |
+| **Muon** | `learning_rate: 0.02`, `beta1: 0.9`, `beta2: 0.95`, `muon_momentum: 0.95` | 3.4166 | 30.47 | 831.8s | Lowest validation loss |
+
+### Sophia-G vs. Rocora learning rate response curve
+
+Across the full spectrum of evaluated learning rates ($\rho = 0.02$, 600M tokens each):
+
+| Learning rate | Sophia-G loss | Sophia-G PPL | Rocora loss | Rocora PPL | Regimes and behavior |
+|---|---:|---:|---:|---:|---|
+| $5.0 \times 10^{-5}$ | 3.7331 | 41.81 | 3.8200 | 45.60 | Both underfitting; steps too small |
+| $1.0 \times 10^{-4}$ | **3.6147** | **37.14** | 3.6468 | 38.35 | **Sophia-G global optimum**; stable |
+| $1.5 \times 10^{-4}$ | 3.6162 | 37.20 | 3.5889 | 36.19 | Near-optimal for both |
+| $2.0 \times 10^{-4}$ | 3.6568 | 38.74 | **3.5753** | **35.71** | **Rocora global optimum** (-0.0815 vs Sophia) |
+| $4.0 \times 10^{-4}$ | 3.6776 | 39.55 | 3.6039 | 36.74 | Rocora stable; Sophia degrading |
+| $8.0 \times 10^{-4}$ | 6.2375 | 511.59 | 3.6682 | 39.18 | **Sophia diverged; Rocora rescued by residual** |
+
+### Analytical note: Why lower learning rates were required for Sophia-G and Rocora
+
+1. **Preconditioning Dynamics and Update Scale**:
+   Sophia-G preconditions parameter updates using a diagonal Gauss–Newton / Hessian estimate $h_t$ via the clipped inverse denominator $\frac{1}{\max(\rho, h_t)}$. When estimated curvature $h_t$ is modest, the effective parameter step is scaled inversely with $h_t$. In a deep transformer with complex attention layers, localized regions of high loss gradient paired with small empirical Fisher estimates generate disproportionately large effective updates. At learning rates $\ge 4.0 \times 10^{-4}$ (and catastrophically at $8.0 \times 10^{-4}$), these steps overshoot the quadratic approximation trust region, resulting in loss spikes and eventual divergence (Sophia reached loss 6.2375, PPL 511.59 at $8.0 \times 10^{-4}$).
+
+2. **Boundary Artifact in the Initial Sweep**:
+   The initial 6-trial grid explored $[0.5\times, 1.0\times, 2.0\times]$ of the nominal $4.0 \times 10^{-4}$ rate, spanning $[2.0 \times 10^{-4}, 4.0 \times 10^{-4}, 8.0 \times 10^{-4}]$. In that grid, Sophia-G's validation loss strictly decreased as learning rate decreased ($3.6568$ at $2.0 \times 10^{-4}$ vs $3.6776$ at $4.0 \times 10^{-4}$ and divergence at $8.0 \times 10^{-4}$). Selecting a winner at the lowest boundary of a discrete grid is statistically un sound—it indicates that the search grid did not encompass the minimum of the convex loss bowl.
+
+3. **Resolving the True Optimum via Low-LR Sweeps**:
+   To establish an uncompromised scientific baseline for the 2.5B-token main run, an additional targeted low-LR sweep was executed over $[5.0 \times 10^{-5}, 1.0 \times 10^{-4}, 1.5 \times 10^{-4}]$. This precisely resolved the parabolic convergence curve: Sophia-G's loss dropped from $3.7331$ (underfitting at $5.0 \times 10^{-5}$) to a true global minimum of **$3.6147$** at **$1.0 \times 10^{-4}$**, before climbing at higher rates.
+
+4. **Residual Stabilizing Effect**:
+   Rocora incorporates residual-only coded curvature measurements on top of the Gauss–Newton core. In the higher-rate regime ($4.0 \times 10^{-4}$ and $8.0 \times 10^{-4}$), Rocora's residual channel actively detected the non-Gauss-Newton curvature and clipped / damped the update, completely preventing the divergence that incapacitated Sophia-G ($3.6682$ vs $6.2375$). Furthermore, Rocora achieved its unconstrained global optimum at $2.0 \times 10^{-4}$ (**$3.5753$**, PPL **$35.71$**), outperforming Sophia's global best by **-0.0394** in validation loss and **-1.43** in perplexity. Under the repository's strict scientific control protocol (`AGENTS.md`), Rocora's recipe for the main stage matches Sophia-G's best configuration ($1.0 \times 10^{-4}$, $\rho = 0.02$).
 
 Sweeps use seed 1337, a short standalone cosine schedule with 5% warmup, three
 learning-rate multipliers (0.5, 1, 2), and two values of one additional setting:

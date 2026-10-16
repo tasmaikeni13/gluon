@@ -24,22 +24,22 @@
   },
   "optimizers": {
     "adamw": {
-      "learning_rate": 0.0006,
+      "learning_rate": 0.0012,
       "beta1": 0.9,
-      "beta2": 0.95,
+      "beta2": 0.99,
       "eps": 1e-08
     },
     "sophia": {
-      "learning_rate": 0.0004,
+      "learning_rate": 0.0001,
       "beta1": 0.965,
       "beta2": 0.99,
-      "rho": 0.03
+      "rho": 0.02
     },
     "rocora": {
-      "learning_rate": 0.0004,
+      "learning_rate": 0.0001,
       "beta1": 0.965,
       "beta2": 0.99,
-      "rho": 0.03,
+      "rho": 0.02,
       "residual_weight": 1.0
     },
     "soap": {
@@ -71,7 +71,9 @@
   "seeds": [
     1337,
     1338,
-    1339
+    1339,
+    1340,
+    1341
   ],
   "microbatch_per_device": 1
 }

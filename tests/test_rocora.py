@@ -117,7 +117,7 @@ def test_stage_counts_and_sophia_rocora_settings():
         for field in ("learning_rate","beta1","beta2","rho","eps","weight_decay","core_interval"):
             assert getattr(cfg.optimizer,field)==getattr(sophia.optimizer,field)
     pod=json.loads((root/"configs/pod.json").read_text())
-    assert pod["seeds"]["scale125m"]==[1337,1338,1339]
+    assert pod["seeds"]["scale125m"]==[1337,1338,1339,1340,1341]
     assert pod["seeds"]["scale350m"]==[1337]
     assert pod["seeds"]["scale1b"]==[1337]
 
