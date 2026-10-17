@@ -43,7 +43,7 @@
 | M2 | XLA Optimizer Updates & Kernel Routing | Enforce pure XLA fusion across all optimizer updates, delete Pallas optimizer kernels, reserve Pallas for FlashAttention | none | COMPLETE (`de02df20-f943-4c96-8573-b1cac963aa13`) |
 | M3 | Sophia-H Optimizer Implementation | Hutchinson Hessian diagonal estimator, Rademacher probes, registry in `config.py`, `train.py`, `checkpoint.py`, `sweep.py`, configs, tests | M1, M2 | COMPLETE (`df53a818-4f45-408b-b3f4-be449e186ef4`) |
 | M4 | Purge Obsolete Results & Sync Docs/Configs | Remove `outputs/scale125m`, `outputs/tuning`; update `README.md`, `theory.md`, `note.md`, `docs/`, configs, sweep manifests | M1, M3 | COMPLETE (`92d2d067-1cf4-4c55-98e2-0353d3f75dd2`) |
-| M5 | Comprehensive E2E Verification & GitHub Push | Full E2E test suite pass (Tiers 1-4), scientific control checks, `git diff --check`, commit and push to `origin/main` | M1, M2, M3, M4 | IN_PROGRESS |
+| M5 | Comprehensive E2E Verification & GitHub Push | Full E2E test suite pass (Tiers 1-4), scientific control checks, `git diff --check`, commit and push to `origin/main` | M1, M2, M3, M4 | COMPLETE (`c10fd49f-52cd-438a-a124-737dcdb0fe01`, commit `8206478`) |
 
 ## Interface Contracts
 ### `model.py` ↔ `train.py` & `curvature.py`
