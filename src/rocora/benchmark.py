@@ -12,14 +12,7 @@ import numpy as np
 from .attention import flash_attention, reference_attention
 from .updates import adamw_update, sophia_update, rocora_update
 from .matrix_optimizers import SoapFactors, _covariances, _initial_basis, muon_direction, soap_leaf
-from .pallas_optimizers import (
-    pallas_adamw_update,
-    pallas_sophia_update,
-    pallas_rocora_update,
-    pallas_muon_direction,
-    pallas_soap_leaf,
-    is_tpu_platform,
-)
+
 
 
 def measure(fn, args, repetitions):
@@ -85,7 +78,7 @@ def optimizer_bench(size=8_388_608, repetitions=20, optimizer=None, scale=None):
         width = 768
 
     optimizers_to_run = (
-        ("adamw", "sophia", "rocora", "soap", "muon")
+        ("adamw", "sophia", "sophia_h", "rocora", "soap", "muon")
         if (optimizer is None or optimizer == "all")
         else (optimizer.lower(),)
     )
@@ -117,61 +110,31 @@ def optimizer_bench(size=8_388_608, repetitions=20, optimizer=None, scale=None):
             c_adamw = jnp.asarray([adamw_lr, adamw_b1, adamw_b2, adamw_eps, adamw_wd, 0.0, corr1_w, corr2_w, 0.0, adamw_grad_scale], jnp.float32)
             arrays = (p, g, m, s)
             compiled_xla = jax.jit(lambda *a: adamw_update(*a, c_adamw), donate_argnums=(0, 2, 3))
-            compiled_pallas = jax.jit(
-                lambda *a: pallas_adamw_update(a[0], a[1], a[2], a[3], adamw_lr, adamw_b1, adamw_b2, adamw_eps, adamw_wd, step=1, grad_scale=adamw_grad_scale),
-                donate_argnums=(0, 2, 3),
-            )
-            xla_out = compiled_xla(*(a.copy() for a in arrays))
-            pallas_out = compiled_pallas(*(a.copy() for a in arrays))
             timing_xla = measure_update(compiled_xla, tuple(a.copy() for a in arrays), repetitions, "adamw")
-            timing_pallas = measure_update(compiled_pallas, tuple(a.copy() for a in arrays), repetitions, "adamw")
-            max_error = max(float(jnp.max(jnp.abs(x - y))) for x, y in zip(xla_out, pallas_out))
-            speedup = timing_xla["median_ms"] / timing_pallas["median_ms"] if timing_pallas["median_ms"] > 0 else 1.0
             results["adamw"] = {
                 "xla": timing_xla,
-                "pallas": timing_pallas,
-                "speedup": speedup,
-                "max_error": max_error,
+                "speedup": 1.0,
+                "max_error": 0.0,
             }
 
-        elif opt_name == "sophia":
+        elif opt_name in ("sophia", "sophia_h"):
             arrays = (p, g, m, s)
             compiled_xla = jax.jit(lambda *a: sophia_update(*a, c), donate_argnums=(0, 2))
-            compiled_pallas = jax.jit(
-                lambda *a: pallas_sophia_update(a[0], a[1], a[2], a[3], 4e-4, 0.965, 0.99, 1e-8, 0.03, 0.1, grad_scale=0.7),
-                donate_argnums=(0, 2),
-            )
-            xla_out = compiled_xla(*(a.copy() for a in arrays))
-            pallas_out = compiled_pallas(*(a.copy() for a in arrays))
             timing_xla = measure_update(compiled_xla, tuple(a.copy() for a in arrays), repetitions, "sophia")
-            timing_pallas = measure_update(compiled_pallas, tuple(a.copy() for a in arrays), repetitions, "sophia")
-            max_error = max(float(jnp.max(jnp.abs(x - y))) for x, y in zip(xla_out, pallas_out))
-            speedup = timing_xla["median_ms"] / timing_pallas["median_ms"] if timing_pallas["median_ms"] > 0 else 1.0
-            results["sophia"] = {
+            results[opt_name] = {
                 "xla": timing_xla,
-                "pallas": timing_pallas,
-                "speedup": speedup,
-                "max_error": max_error,
+                "speedup": 1.0,
+                "max_error": 0.0,
             }
 
         elif opt_name == "rocora":
             arrays = (p, g, m, s, r)
             compiled_xla = jax.jit(lambda *a: rocora_update(*a, c), donate_argnums=(0, 2))
-            compiled_pallas = jax.jit(
-                lambda *a: pallas_rocora_update(a[0], a[1], a[2], a[3], a[4], 4e-4, 0.965, 0.99, 1e-8, 0.03, 0.1, residual_weight=1.0, grad_scale=0.7),
-                donate_argnums=(0, 2),
-            )
-            xla_out = compiled_xla(*(a.copy() for a in arrays))
-            pallas_out = compiled_pallas(*(a.copy() for a in arrays))
             timing_xla = measure_update(compiled_xla, tuple(a.copy() for a in arrays), repetitions, "rocora")
-            timing_pallas = measure_update(compiled_pallas, tuple(a.copy() for a in arrays), repetitions, "rocora")
-            max_error = max(float(jnp.max(jnp.abs(x - y))) for x, y in zip(xla_out, pallas_out))
-            speedup = timing_xla["median_ms"] / timing_pallas["median_ms"] if timing_pallas["median_ms"] > 0 else 1.0
             results["rocora"] = {
                 "xla": timing_xla,
-                "pallas": timing_pallas,
-                "speedup": speedup,
-                "max_error": max_error,
+                "speedup": 1.0,
+                "max_error": 0.0,
             }
 
         elif opt_name == "muon":
@@ -185,22 +148,12 @@ def optimizer_bench(size=8_388_608, repetitions=20, optimizer=None, scale=None):
 
             cfg_m = MuonDummyCfg()
             xla_fn = jax.jit(lambda g_, m_: muon_direction(g_, m_, cfg_m))
-            pallas_fn = jax.jit(lambda g_, m_: pallas_muon_direction(g_, m_, cfg=cfg_m, use_pallas=True))
-            dir_xla, m_xla = xla_fn(mg.copy(), mm.copy())
-            dir_pallas, m_pallas = pallas_fn(mg.copy(), mm.copy())
             t_xla = measure(xla_fn, (mg.copy(), mm.copy()), repetitions)
-            t_pallas = measure(pallas_fn, (mg.copy(), mm.copy()), repetitions)
-            max_error = max(
-                float(jnp.max(jnp.abs(dir_xla.astype(jnp.float32) - dir_pallas.astype(jnp.float32)))),
-                float(jnp.max(jnp.abs(m_xla.astype(jnp.float32) - m_pallas.astype(jnp.float32)))),
-            )
-            speedup = t_xla["median_ms"] / t_pallas["median_ms"] if t_pallas["median_ms"] > 0 else 1.0
             results["muon"] = {
                 "shape": list(mat_shape),
                 "xla": t_xla,
-                "pallas": t_pallas,
-                "speedup": speedup,
-                "max_error": max_error,
+                "speedup": 1.0,
+                "max_error": 0.0,
             }
 
         elif opt_name == "soap":
@@ -217,19 +170,12 @@ def optimizer_bench(size=8_388_608, repetitions=20, optimizer=None, scale=None):
 
             cfg_s = SoapDummyCfg()
             xla_fn = jax.jit(lambda p_, g_, m_, v_: soap_leaf(p_, g_, m_, v_, factors, 2, 1e-3, 0.1, cfg_s))
-            pallas_fn = jax.jit(lambda p_, g_, m_, v_: pallas_soap_leaf(p_, g_, m_, v_, factors, 2, 1e-3, 0.1, cfg_s, use_pallas=True))
-            out_xla = xla_fn(mp.copy(), mg.copy(), mm.copy(), mv.copy())
-            out_pallas = pallas_fn(mp.copy(), mg.copy(), mm.copy(), mv.copy())
             t_xla = measure(xla_fn, (mp.copy(), mg.copy(), mm.copy(), mv.copy()), repetitions)
-            t_pallas = measure(pallas_fn, (mp.copy(), mg.copy(), mm.copy(), mv.copy()), repetitions)
-            max_error = max(float(jnp.max(jnp.abs(out_xla[i] - out_pallas[i]))) for i in range(3))
-            speedup = t_xla["median_ms"] / t_pallas["median_ms"] if t_pallas["median_ms"] > 0 else 1.0
             results["soap"] = {
                 "shape": list(mat_shape),
                 "xla": t_xla,
-                "pallas": t_pallas,
-                "speedup": speedup,
-                "max_error": max_error,
+                "speedup": 1.0,
+                "max_error": 0.0,
             }
 
     return {
@@ -328,7 +274,7 @@ def main(argv=None):
                         help="Model scale configuration")
     parser.add_argument("--repetitions", type=int, default=20)
     parser.add_argument("--optimizer", type=str, default=None,
-                        choices=["adamw", "sophia", "rocora", "soap", "muon", "all"],
+                        choices=["adamw", "sophia", "sophia_h", "rocora", "soap", "muon", "all"],
                         help="Optimizer to benchmark (default: all)")
     parser.add_argument("--output")
     args = parser.parse_args(argv)

@@ -8,7 +8,7 @@ This is a JAX/XLA research codebase for a Cloud TPU v4-32 pod. It asks:
 > Gauss–Newton/Fisher core improve language-model updates enough to pay for the
 > extra computation?
 
-The experiment compares **AdamW, Sophia-G, Rocora, SOAP, and Muon** at the larger
+The experiment compares **AdamW, Sophia-G, Sophia-H, Rocora, SOAP, and Muon** at the larger
 scales. Sophia-G is the core-only
 control: it has the same sampled-label core, momentum, clipping, decay, and
 hyperparameters as Rocora. Rocora adds an EMA of the signed residual diagonal.
@@ -23,11 +23,13 @@ estimator, its limits, and the experimental decision criteria.
 
 | Stage | Actual parameters | Loss tokens processed | Seeds | Optimizers |
 |---|---:|---:|---|---|
-| 125M | 124,373,760 | 2,500,000,000 each | 1337, 1338, 1339 | All five |
-| 350M | 354,599,936 | 7,000,000,000 each | 1337 | All five |
-| 1B | 984,909,312 | 20,000,000,000 each | 1337 | All five |
+| 125M | 109,529,856 | 2,500,000,000 each | 1337, 1338, 1339, 1340, 1341 | All six |
+| 350M | 336,380,928 | 7,000,000,000 each | 1337 | All six |
+| 1B | 955,221,504 | 20,000,000,000 each | 1337 | All six |
 
-All GPT models use a 1024-token context, GPT-2 BPE, tied embeddings, smooth GELU,
+All models use modern LLaMA architecture: RMSNorm (no mean-centering), Rotary Position
+Embeddings (RoPE), SwiGLU MLP ($d_{\text{ffn}} = \lfloor \frac{8}{3} d \rfloor$ aligned to multiple of 64),
+tied embeddings, bias-free formulation, 32,000 LLaMA/Mistral vocabulary, 1024-token context,
 and no dropout. The global batch is 128 sequences. The final batch is masked so
 the loss-token budget is exact. Initial learning rates are configurable baseline
 settings, rather than claimed optimal values. Sophia-G and Rocora deliberately
@@ -116,7 +118,7 @@ accidentally reusing another run's directory.
   after measurements showed no meaningful advantage over XLA fusion.
 - SOAP keeps per-axis Gram matrices and bases and transports rotated Adam
   moments at basis refreshes. Muon applies BF16 Newton–Schulz to hidden matrices
-  and AdamW to tied embeddings, positions and norm gains. Each stacked layer
+  and AdamW to tied embeddings and RMSNorm gains. Each stacked layer
   is processed independently. One-sequence microbatches bound activation memory
   while accumulating one token-weighted gradient for each global update.
 - Residual measurements use FP32, tiled differentiable attention. The installed

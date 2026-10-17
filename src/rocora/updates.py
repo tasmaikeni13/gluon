@@ -20,6 +20,11 @@ def sophia_update(p, g, m, s, c):
     return p * (1 - lr * wd) - lr * update, m
 
 
+def sophia_h_update(p, g, m, h, c):
+    """Sophia-H coordinate-wise clipped update using Hutchinson Hessian diagonal."""
+    return sophia_update(p, g, m, h, c)
+
+
 def rocora_update(p, g, m, s, r, c):
     lr, b1, _, eps, wd, rho, _, _, residual_weight, grad_scale = c
     g = g * grad_scale

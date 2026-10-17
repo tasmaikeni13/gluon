@@ -27,8 +27,11 @@ def validate_corpus(cfg, allow_missing: bool = False):
     metadata = json.loads(meta_path.read_text())
     if metadata.get("dataset") != cfg.dataset:
         raise ValueError(f"Wrong dataset provenance: {metadata.get('dataset')} != {cfg.dataset}")
-    if not str(metadata.get("tokenizer", "")).lower().startswith("gpt2"):
-        raise ValueError("These configurations require GPT-2 tokenization")
+    tokenizer_name = str(metadata.get("tokenizer", "")).lower()
+    if "gpt2" in tokenizer_name or tokenizer_name.startswith("gpt-2"):
+        raise ValueError("GPT-2 tokenization is deprecated and rejected; modern LLaMA/Mistral tokenization is required")
+    if not any(k in tokenizer_name for k in ("llama", "mistral", "sentencepiece", "fast")):
+        raise ValueError(f"These configurations require modern LLaMA/Mistral tokenization (got '{metadata.get('tokenizer')}')")
     for name, path in (("train", train_path), ("valid", val_path)):
         tokens = np.load(path, mmap_mode="r", allow_pickle=False)
         if tokens.ndim != 1 or tokens.dtype != np.uint16:
@@ -56,16 +59,16 @@ class TokenBatches:
 
     def __init__(self, path, sequence, global_batch, process_count=1,
                  process_index=0, seed=1337, shuffle=True, token_budget=None,
-                 skip_initial_document=False):
+                 skip_initial_document=False, document_separator=2):
         if global_batch % process_count:
             raise ValueError("Global batch must be divisible by process count")
         self.tokens = np.load(path, mmap_mode="r", allow_pickle=False)
         self.skipped_tokens = 0
         if skip_initial_document:
-            # The existing 2.5B archive splits a boundary document between val
-            # and train. Exclude its entire remaining prefix from training.
+            # Exclude boundary document remaining prefix from training.
+            # Modern LLaMA / Mistral document separator is 2 (</s>).
             for start in range(0, len(self.tokens), 65536):
-                endings = np.flatnonzero(self.tokens[start:start+65536] == 50256)
+                endings = np.flatnonzero(self.tokens[start:start+65536] == document_separator)
                 if len(endings):
                     self.skipped_tokens = start + int(endings[0]) + 1
                     break

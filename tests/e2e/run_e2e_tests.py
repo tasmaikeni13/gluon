@@ -26,11 +26,18 @@ TIER_FILES = {
     4: ROOT / "tests/e2e/test_tier4_workloads.py",
 }
 
+SPECIALIZED_FILES = {
+    "llama": ROOT / "tests/e2e/test_llama_features.py",
+    "sophia_h": ROOT / "tests/e2e/test_sophia_h.py",
+}
+
 TIER_DESCRIPTIONS = {
     1: "Tier 1: Feature Coverage (≥60 tests across 12 features)",
     2: "Tier 2: Boundary & Corner Cases (≥60 tests across 12 features)",
     3: "Tier 3: Pairwise Combinations (≥15 tests across interactions)",
     4: "Tier 4: Realistic Workloads (≥6 bounded smoke workloads)",
+    "llama": "Specialized: Modern LLaMA Architecture & Autodiff Suite",
+    "sophia_h": "Specialized: Sophia-H & Scientific Controls Suite",
 }
 
 
@@ -41,9 +48,9 @@ def parse_args():
     )
     parser.add_argument(
         "--tier", "-t",
-        choices=["1", "2", "3", "4", "all"],
+        choices=["1", "2", "3", "4", "llama", "sophia_h", "all"],
         default="all",
-        help="Select which test tier to run (default: all)",
+        help="Select which test tier or suite to run (default: all)",
     )
     parser.add_argument(
         "-k", "--expression",
@@ -79,13 +86,15 @@ def main():
     print("-" * 80)
 
     if args.tier == "all":
-        selected_tiers = [1, 2, 3, 4]
+        selected_tiers = [1, 2, 3, 4, "llama", "sophia_h"]
+    elif args.tier in ("llama", "sophia_h"):
+        selected_tiers = [args.tier]
     else:
         selected_tiers = [int(args.tier)]
 
     test_targets = []
     for t in selected_tiers:
-        target_path = TIER_FILES[t]
+        target_path = TIER_FILES[t] if isinstance(t, int) else SPECIALIZED_FILES[t]
         if not target_path.exists():
             print(f"ERROR: Test file {target_path} not found!", file=sys.stderr)
             return 1

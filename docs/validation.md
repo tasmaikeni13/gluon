@@ -55,9 +55,9 @@ fusion, which fuses elementwise updates directly into backward passes and elimin
 for memory-bandwidth bound operations (~0.5 FLOP/byte). While custom Pallas kernels achieved a
 +15.5% speedup on SOAP at 125M scale, enabling custom kernels solely for SOAP would introduce an
 asymmetric implementation advantage confounding algorithmic evaluation. Consequently, all five
-optimizers default to XLA-fused execution (`pallas_mode: "xla"` / `use_pallas: false`), while
-custom Pallas kernels are preserved in `src/rocora/pallas_optimizers.py` as supplementary material
-and can be toggled on demand via `pallas_mode: "pallas"`.
+optimizers strictly execute via pure XLA fusion (`src/rocora/updates.py` and
+`src/rocora/matrix_optimizers.py`). Custom Pallas optimizer kernels were completely removed
+and deleted, reserving Pallas exclusively for TPU FlashAttention in `src/rocora/attention.py`.
 
 FlashAttention parity uses BF16 tensors with batch 8, heads 8, sequence 1024 and
 head width 64. Maximum observed forward error is 0.001953125 and backward error
@@ -81,7 +81,7 @@ These are exact processed-token experiments.
 source fingerprint, optimizer settings, finite training/evaluation metrics,
 curvature diagnostics and checkpoint counters. Each fresh check uses seed 1337,
 the checked-in global batch of 128, context 1024, FlashAttention, and XLA updates.
-The actual parameter count for 125M is 124,373,760 (with 350M at 354,599,936 and 1B at 984,909,312). Rocora checks include
+The actual parameter count for 125M is 109,529,856 (with 350M at 336,380,928 and 1B at 955,221,504). Rocora checks include
 a complete four-code residual group; Sophia-G checks include a sampled-label core
 event. Outputs live under validation names and have budget_complete=false.
 

@@ -12,9 +12,9 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("stage,count,tokens,seeds",[
-    ("scale125m",124_373_760,2_500_000_000,[1337,1338,1339,1340,1341]),
-    ("scale350m",354_599_936,7_000_000_000,[1337]),
-    ("scale1b",984_909_312,20_000_000_000,[1337]),
+    ("scale125m",109_529_856,2_500_000_000,[1337,1338,1339,1340,1341]),
+    ("scale350m",336_380_928,7_000_000_000,[1337]),
+    ("scale1b",955_221_504,20_000_000_000,[1337]),
 ])
 def test_all_requested_main_and_budget_recipes(stage,count,tokens,seeds):
     for arm in OPTIMIZERS:
@@ -26,7 +26,7 @@ def test_all_requested_main_and_budget_recipes(stage,count,tokens,seeds):
             assert cfg.minimum_train_corpus_tokens==tokens
     sweep=plan(ROOT/f"configs/sweeps/{stage}.json")
     assert sweep["trials_per_arm"]==6
-    assert sweep["total_tokens"]==5*sweep["tokens_per_arm"]
+    assert sweep["total_tokens"]==len(OPTIMIZERS)*sweep["tokens_per_arm"]
     shared={}
     for arm in OPTIMIZERS:
         trials=[t for t in sweep["trials"] if t["optimizer"]==arm]
@@ -36,6 +36,8 @@ def test_all_requested_main_and_budget_recipes(stage,count,tokens,seeds):
         shared[arm]=[t["config"]["optimizer"] for t in trials]
     for s,r in zip(shared["sophia"],shared["rocora"]):
         assert {k:v for k,v in s.items() if k!="name"}=={k:v for k,v in r.items() if k!="name"}
+    for s,sh in zip(shared["sophia"],shared["sophia_h"]):
+        assert {k:v for k,v in s.items() if k!="name"}=={k:v for k,v in sh.items() if k!="name"}
 
 
 def _results(manifest,root):
@@ -103,9 +105,10 @@ def test_five_arm_report_requires_all_arms_seeds_and_matched_controls(tmp_path):
     assert set(summarize(paths)["arms"])==set(OPTIMIZERS)
     with pytest.raises(ValueError,match="arms differ"):
         summarize(paths[:-1])
-    rows=[json.loads(line) for line in paths[2].read_text().splitlines()]
+    rocora_idx = OPTIMIZERS.index("rocora")
+    rows=[json.loads(line) for line in paths[rocora_idx].read_text().splitlines()]
     rows[0]["config"]["optimizer"]["rho"]=.5
-    paths[2].write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    paths[rocora_idx].write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
     with pytest.raises(ValueError,match="confounded"):
         summarize(paths)
     assert summarize(paths,comparison="tuned")["comparison"]=="tuned"
@@ -122,7 +125,7 @@ def test_large_recipe_rejects_a_short_corpus(tmp_path):
     from rocora.data import validate_corpus
     np.save(tmp_path/"train.npy",np.zeros(2048,np.uint16))
     np.save(tmp_path/"valid.npy",np.zeros(2048,np.uint16))
-    metadata={"dataset":"HuggingFaceFW/fineweb-edu","tokenizer":"gpt2",
+    metadata={"dataset":"HuggingFaceFW/fineweb-edu","tokenizer":"llama",
               "train_tokens":2048,"valid_tokens":2048}
     (tmp_path/"metadata.json").write_text(json.dumps(metadata))
     cfg=load_config(ROOT/"configs/scale1b.json")
@@ -130,3 +133,28 @@ def test_large_recipe_rejects_a_short_corpus(tmp_path):
                 data_metadata=str(tmp_path/"metadata.json"))
     with pytest.raises(ValueError,match="requires at least 20000000000"):
         validate_corpus(cfg)
+
+
+def test_validate_corpus_rejects_gpt2_and_accepts_llama(tmp_path):
+    from dataclasses import replace
+    import numpy as np
+    from rocora.data import validate_corpus
+    np.save(tmp_path/"train.npy",np.zeros(2048,np.uint16))
+    np.save(tmp_path/"valid.npy",np.zeros(2048,np.uint16))
+    cfg=load_config(ROOT/"configs/scale125m.json")
+    cfg=replace(cfg,train_file=str(tmp_path/"train.npy"),validation_file=str(tmp_path/"valid.npy"),
+                data_metadata=str(tmp_path/"metadata.json"),minimum_train_corpus_tokens=0)
+
+    # GPT-2 metadata is rejected
+    metadata_gpt2={"dataset":"HuggingFaceFW/fineweb-edu","tokenizer":"gpt2",
+                   "train_tokens":2048,"valid_tokens":2048}
+    (tmp_path/"metadata.json").write_text(json.dumps(metadata_gpt2))
+    with pytest.raises(ValueError,match="GPT-2 tokenization is deprecated and rejected"):
+        validate_corpus(cfg)
+
+    # LLaMA metadata is accepted
+    metadata_llama={"dataset":"HuggingFaceFW/fineweb-edu","tokenizer":"llama (NousResearch/Llama-2-7b-hf)",
+                    "train_tokens":2048,"valid_tokens":2048}
+    (tmp_path/"metadata.json").write_text(json.dumps(metadata_llama))
+    val=validate_corpus(cfg)
+    assert "llama" in val["tokenizer"]

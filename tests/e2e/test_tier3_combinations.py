@@ -265,9 +265,9 @@ def test_tier3_comb12_tpu_worker_lock_coordination_with_pod_command_generation()
 def test_tier3_comb13_parameter_count_formula_vs_config_at_all_three_scales():
     """Pairwise: Theoretical parameter count formula vs config parameter_count across 125M, 350M, 1B."""
     expected_counts = {
-        "scale125m": 124_373_760,
-        "scale350m": 354_599_936,
-        "scale1b": 984_909_312,
+        "scale125m": 109_529_856,
+        "scale350m": 336_380_928,
+        "scale1b": 955_221_504,
     }
     for stage, count in expected_counts.items():
         cfg = load_config(ROOT / f"configs/{stage}.json")
@@ -302,7 +302,7 @@ def test_tier3_comb15_sweep_manifest_materialization_all_scales_all_arms(tmp_pat
         if sweep_file.exists():
             manifest = plan(sweep_file)
             assert manifest["trials_per_arm"] == 6
-            assert len(manifest["trials"]) == 5 * 6  # 5 arms * 6 trials = 30 trials
+            assert len(manifest["trials"]) == len(OPTIMIZERS) * 6
             for trial in manifest["trials"]:
                 assert "pilot" not in trial["run_name"]
                 assert trial["optimizer"] in OPTIMIZERS

@@ -27,9 +27,9 @@ def plan(spec_path):
         raise ValueError("Sweep name must be a single path component")
     axes = spec["axes"]
     if set(axes) != set(OPTIMIZERS):
-        raise ValueError("A budget sweep must specify all five optimizers")
-    if axes["sophia"] != axes["rocora"]:
-        raise ValueError("Sophia/Rocora must have identical candidate axes")
+        raise ValueError(f"A budget sweep must specify all optimizers in {OPTIMIZERS}")
+    if axes["sophia"] != axes["rocora"] or ("sophia_h" in axes and axes["sophia_h"] != axes["sophia"]):
+        raise ValueError("Sophia/Sophia-H/Rocora must have identical candidate axes")
     tokens, warmup = spec["trial_tokens"], spec["warmup_fraction"]
     if not isinstance(tokens, int) or tokens <= 0 or not 0 <= warmup < 1:
         raise ValueError("Invalid tuning token budget or warmup fraction")
@@ -119,6 +119,8 @@ def select(manifest, output_root, destination, mode="matched"):
         index = candidates["sophia"].index(next(x for x in candidates["sophia"]
                                                 if x[1]["id"] == winners["sophia"]["id"]))
         winners["rocora"] = candidates["rocora"][index][1]
+        if "sophia_h" in candidates:
+            winners["sophia_h"] = candidates["sophia_h"][index][1]
     base["optimizers"] = {arm: trial["config"]["optimizer"] for arm, trial in winners.items()}
     destination = Path(destination)
     if destination.exists():

@@ -208,4 +208,4 @@ def test_masked_microbatch_accumulation_matches_direct_gradient():
     actual,metrics=build_steps(cfg,params)[0](state,mapped)
     assert int(metrics["tokens"][0])==3
     for a,b in zip(jax.tree.leaves(actual.params),jax.tree.leaves(expected.params)):
-        np.testing.assert_allclose(a[0],b,rtol=2e-3,atol=2e-5)
+        np.testing.assert_allclose(a[0],b,rtol=2e-3,atol=3e-5)

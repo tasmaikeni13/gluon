@@ -11,9 +11,9 @@
   "train_tokens": 2500000000,
   "global_batch_size": 128,
   "warmup_tokens": 400000000,
-  "train_file": "/home/tasma/data/fw25/fineweb_train_2_5B.npy",
-  "validation_file": "/home/tasma/data/fw25/fineweb_valid.npy",
-  "data_metadata": "/home/tasma/data/fw25/fineweb_metadata.json",
+  "train_file": "/home/tasma/data/fw2_5b/train.npy",
+  "validation_file": "/home/tasma/data/fw2_5b/valid.npy",
+  "data_metadata": "/home/tasma/data/fw2_5b/metadata.json",
   "dataset": "HuggingFaceFW/fineweb-edu",
   "train_skip_initial_document": true,
   "optimizer": {

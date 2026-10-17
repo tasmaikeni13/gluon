@@ -76,3 +76,55 @@ def residual_diagonal(params, batch, cfg, key, m=4, initial=None, sample_weight=
 
     estimate, _ = jax.lax.scan(accumulate, initial, jnp.arange(m, dtype=jnp.uint32))
     return estimate, count
+
+
+def rademacher_probe(shape_or_params, key, dtype=jnp.float32):
+    """Generate unbiased random Rademacher probe vector u in {-1, +1}^d.
+
+    Accepts either an integer, a shape tuple (e.g. (10, 10)), or a PyTree of parameters.
+    """
+    if isinstance(shape_or_params, int):
+        shape_or_params = (shape_or_params,)
+    if isinstance(shape_or_params, (tuple, list)) and all(isinstance(x, int) for x in shape_or_params):
+        bits = jax.random.bits(key, tuple(shape_or_params), dtype=jnp.uint32)
+        return 1.0 - 2.0 * (bits & jnp.uint32(1)).astype(dtype)
+    leaves, tree = jax.tree.flatten(shape_or_params)
+    probes = []
+    for i, p in enumerate(leaves):
+        bits = jax.random.bits(jax.random.fold_in(key, i), p.shape, dtype=jnp.uint32)
+        flips = 1 - 2 * (bits & jnp.uint32(1)).astype(p.dtype)
+        probes.append(flips)
+    return tree.unflatten(probes)
+
+
+def hutchinson_hvp(params, batch, cfg, key):
+    """Single-device Hessian-vector product against a Rademacher probe.
+
+    Uses the true loss mini-batch and automatic differentiation (HVP).
+    Curvature=True activates differentiable reference attention.
+    """
+    count = jnp.sum(batch["mask"])
+    probe = rademacher_probe(params, key)
+
+    def loss_fn(p):
+        return loss_sum(p, batch, cfg, sample_key=None, curvature=True) / jnp.maximum(count, 1)
+
+    _, hv = jax.jvp(jax.grad(loss_fn), (params,), (probe,))
+    return probe, hv, count
+
+
+def hutchinson_diagonal(params, batch, cfg, key, axis_name="data"):
+    """Single-device or distributed Hutchinson Hessian diagonal estimator.
+
+    Uses automatic differentiation (HVP) on true loss mini-batch with curvature=True.
+    Averages local Hv products across replicas with token weights if under distributed axis.
+    Returns estimated diagonal h_hat = max(u * Hv(u), 0) clipped non-negatively.
+    """
+    probe, hv, count = hutchinson_hvp(params, batch, cfg, key)
+    if axis_name is not None:
+        try:
+            total = jax.lax.psum(count, axis_name)
+            hv = jax.tree.map(lambda g: jax.lax.psum(g * count, axis_name) / jnp.maximum(total, 1), hv)
+        except (NameError, ValueError):
+            pass
+    return jax.tree.map(lambda u, v: jnp.maximum(u * v, 0.0), probe, hv)

@@ -5,15 +5,17 @@
     "layers": 12,
     "heads": 12,
     "sequence_length": 1024,
+    "vocab_size": 32000,
+    "valid_vocab_size": 32000,
     "attention": "flash",
     "loss_chunk": 128
   },
   "train_tokens": 2500000000,
   "global_batch_size": 128,
   "warmup_tokens": 100000000,
-  "train_file": "/home/tasma/data/fw25/fineweb_train_2_5B.npy",
-  "validation_file": "/home/tasma/data/fw25/fineweb_valid.npy",
-  "data_metadata": "/home/tasma/data/fw25/fineweb_metadata.json",
+  "train_file": "/home/tasma/data/fw2_5b/train.npy",
+  "validation_file": "/home/tasma/data/fw2_5b/valid.npy",
+  "data_metadata": "/home/tasma/data/fw2_5b/metadata.json",
   "dataset": "HuggingFaceFW/fineweb-edu",
   "train_skip_initial_document": true,
   "optimizer": {
@@ -30,6 +32,12 @@
       "eps": 1e-08
     },
     "sophia": {
+      "learning_rate": 0.0001,
+      "beta1": 0.965,
+      "beta2": 0.99,
+      "rho": 0.02
+    },
+    "sophia_h": {
       "learning_rate": 0.0001,
       "beta1": 0.965,
       "beta2": 0.99,
@@ -64,6 +72,7 @@
   "arms": [
     "adamw",
     "sophia",
+    "sophia_h",
     "rocora",
     "soap",
     "muon"

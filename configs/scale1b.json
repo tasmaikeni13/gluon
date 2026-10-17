@@ -5,6 +5,8 @@
     "layers": 32,
     "heads": 24,
     "sequence_length": 1024,
+    "vocab_size": 32000,
+    "valid_vocab_size": 32000,
     "attention": "flash",
     "loss_chunk": 128
   },
@@ -30,6 +32,12 @@
       "eps": 1e-08
     },
     "sophia": {
+      "learning_rate": 0.0004,
+      "beta1": 0.965,
+      "beta2": 0.99,
+      "rho": 0.03
+    },
+    "sophia_h": {
       "learning_rate": 0.0004,
       "beta1": 0.965,
       "beta2": 0.99,
@@ -64,6 +72,7 @@
   "arms": [
     "adamw",
     "sophia",
+    "sophia_h",
     "rocora",
     "soap",
     "muon"

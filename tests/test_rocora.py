@@ -12,7 +12,14 @@ import pytest
 from rocora.attention import flash_attention, reference_attention
 from rocora.checkpoint import save_checkpoint, load_checkpoint
 from rocora.config import ModelConfig, OptimizerConfig, ExperimentConfig, load_config
-from rocora.curvature import coded_probe, core_sample, residual_diagonal
+from rocora.curvature import (
+    coded_probe,
+    core_sample,
+    residual_diagonal,
+    rademacher_probe,
+    hutchinson_diagonal,
+    hutchinson_hvp,
+)
 from rocora.data import TokenBatches
 from rocora.model import init_params, logits, loss_sum, decay_mask, hidden
 from rocora.optimizers import init_state, update, commit_curvature
@@ -110,12 +117,13 @@ def test_checkpoint_preserves_all_channels_and_rejects_wrong_seed(tmp_path):
 
 def test_stage_counts_and_sophia_rocora_settings():
     root=Path(__file__).resolve().parents[1]
-    for path,expected in (("scale125m.json",124_373_760),("scale350m.json",354_599_936),("scale1b.json",984_909_312)):
+    for path,expected in (("scale125m.json",109_529_856),("scale350m.json",336_380_928),("scale1b.json",955_221_504)):
         cfg=load_config(root/"configs"/path,"rocora")
         assert cfg.model.parameter_count==expected
         sophia=load_config(root/"configs"/path,"sophia")
+        sophia_h=load_config(root/"configs"/path,"sophia_h")
         for field in ("learning_rate","beta1","beta2","rho","eps","weight_decay","core_interval"):
-            assert getattr(cfg.optimizer,field)==getattr(sophia.optimizer,field)
+            assert getattr(cfg.optimizer,field)==getattr(sophia.optimizer,field)==getattr(sophia_h.optimizer,field)
     pod=json.loads((root/"configs/pod.json").read_text())
     assert pod["seeds"]["scale125m"]==[1337,1338,1339,1340,1341]
     assert pod["seeds"]["scale350m"]==[1337]
@@ -133,8 +141,9 @@ def test_token_writer_and_document_split(tmp_path):
 
 def test_exclude_document_shared_with_validation(tmp_path):
     path=tmp_path/"tokens.npy"
-    np.save(path,np.asarray([2,3,50256,5,6,7,8,9,10,11,12],np.uint16))
-    loader=TokenBatches(path,2,2,shuffle=False,skip_initial_document=True)
+    # Modern LLaMA document separator is 2 (</s>)
+    np.save(path,np.asarray([10,20,2,5,6,7,8,9,10,11,12],np.uint16))
+    loader=TokenBatches(path,2,2,shuffle=False,skip_initial_document=True,document_separator=2)
     assert loader.skipped_tokens==3
     np.testing.assert_array_equal(loader.batch(0)["tokens"],[[5,6],[7,8]])
 
@@ -570,20 +579,32 @@ def test_pallas_soap_parity_and_eigenspace_projection():
 
 
 def test_should_use_pallas_fallback_policy():
-    """Verify should_use_pallas policy predicates across modes and backends."""
+    """Verify should_use_pallas unconditionally returns False across all modes and backends."""
     from rocora.pallas_optimizers import should_use_pallas
 
-    # 1. Explicit mode overrides
+    # 1. Explicit mode overrides unconditionally return False
     assert should_use_pallas("adamw", mode="xla") is False
-    assert should_use_pallas("adamw", mode="pallas") is True
+    assert should_use_pallas("adamw", mode="pallas") is False
 
-    # 2. Auto mode on CPU backend (always falls back to XLA)
+    # 2. Auto mode on CPU backend (always False)
     cpu_device = jax.devices("cpu")[0]
-    assert should_use_pallas("adamw", device=cpu_device, mode="auto") is False
-    assert should_use_pallas("sophia", device=cpu_device, mode="auto") is False
-    assert should_use_pallas("rocora", device=cpu_device, mode="auto") is False
-    assert should_use_pallas("muon", device=cpu_device, mode="auto") is False
-    assert should_use_pallas("soap", device=cpu_device, mode="auto") is False
+    for opt in ("adamw", "sophia", "sophia_h", "rocora", "muon", "soap"):
+        assert should_use_pallas(opt, device=cpu_device, mode="auto") is False
+        assert should_use_pallas(opt, mode="auto") is False
+
+    # 3. TPU backend unconditionally returns False per AGENTS.md and user directive
+    class MockTPUDevice:
+        platform = "tpu"
+
+    tpu_device = MockTPUDevice()
+    for opt in ("adamw", "sophia", "sophia_h", "rocora", "muon", "soap"):
+        assert should_use_pallas(opt, device=tpu_device, mode="auto") is False
+        assert should_use_pallas(opt, device=tpu_device, mode="pallas") is False
+
+    # 4. Shapes unconditionally return False
+    assert should_use_pallas("muon", tensor_shape=(512, 512), mode="pallas") is False
+    assert should_use_pallas("muon", tensor_shape=(4096, 4096), mode="pallas") is False
+
 
 
 def test_pallas_optimizer_update_dispatch():
@@ -619,7 +640,97 @@ def test_optimizer_bench_execution():
     res = optimizer_bench(size=128, repetitions=1, scale="125m")
     assert res["scale"] == "125m"
     assert res["width"] == 768
-    for opt in ("adamw", "sophia", "rocora", "soap", "muon"):
+    for opt in ("adamw", "sophia", "sophia_h", "rocora", "soap", "muon"):
         assert opt in res["results"]
         assert res["results"][opt]["max_error"] < 1e-5
         assert res["results"][opt]["speedup"] > 0
+
+
+def test_sophia_h_rademacher_probe_properties():
+    """Verify Rademacher probe produces strict {-1, +1} values, zero mean, and unit variance."""
+    key = jax.random.PRNGKey(42)
+    # 1. Array shape interface
+    u = rademacher_probe((10000,), key)
+    unique_vals = set(np.unique(np.array(u)))
+    assert unique_vals.issubset({-1.0, 1.0})
+    assert abs(float(jnp.mean(u))) < 0.03
+    assert float(jnp.var(u)) == pytest.approx(1.0, abs=0.03)
+
+    # 2. PyTree params interface
+    params = {"w": jnp.ones((64, 64), dtype=jnp.float32), "b": jnp.zeros((64,), dtype=jnp.float32)}
+    probe_tree = rademacher_probe(params, key)
+    for k in params:
+        assert probe_tree[k].shape == params[k].shape
+        assert probe_tree[k].dtype == params[k].dtype
+        assert set(np.unique(np.array(probe_tree[k]))).issubset({-1.0, 1.0})
+
+
+def test_sophia_h_hutchinson_unbiased_estimator_on_quadratic_loss():
+    """Verify Hutchinson estimator converges to exact Hessian diagonal on a positive definite quadratic loss."""
+    rng = np.random.default_rng(123)
+    dim = 6
+    M = rng.normal(size=(dim, dim)).astype(np.float32)
+    A = jnp.asarray(M.T @ M + 1.5 * np.eye(dim, dtype=np.float32))
+    true_diag = jnp.diag(A)
+
+    n_probes = 600
+    accum = jnp.zeros(dim, dtype=jnp.float32)
+    key = jax.random.PRNGKey(777)
+    for i in range(n_probes):
+        key, subkey = jax.random.split(key)
+        u = rademacher_probe((dim,), subkey)
+        hv = jnp.matmul(A, u)
+        accum = accum + u * hv
+
+    mc_diag = accum / n_probes
+    np.testing.assert_allclose(mc_diag, true_diag, rtol=0.2, atol=0.25)
+
+
+def test_sophia_h_nonnegative_clipping_and_update_behavior():
+    """Verify negative curvature is clipped to zero and update is strictly bounded."""
+    lr, rho, eps, wd = 0.001, 0.03, 1e-15, 0.0
+    p = jnp.array([2.0, -2.0], dtype=jnp.float32)
+    g = jnp.array([500.0, -500.0], dtype=jnp.float32)
+    m = jnp.zeros_like(p)
+    u = jnp.array([1.0, 1.0], dtype=jnp.float32)
+    hv = jnp.array([-4.0, 5.0], dtype=jnp.float32)
+    h_hat = jnp.maximum(u * hv, 0.0)
+    assert float(h_hat[0]) == 0.0
+    assert float(h_hat[1]) == 5.0
+
+    cfg = OptimizerConfig(name="sophia_h", learning_rate=lr, rho=rho)
+    state = init_state({"w": p}, cfg)
+    state = commit_curvature(state, {"w": h_hat}, None, cfg)
+    new_state = update(state, {"w": g}, lr, cfg, {"w": False})
+
+    delta = p - new_state.params["w"]
+    np.testing.assert_allclose(delta, jnp.array([lr, -lr], dtype=jnp.float32), atol=1e-6)
+
+
+def test_sophia_h_state_initialization_and_checkpoint_resume(tmp_path):
+    """Verify Sophia-H train state initialization schema, EMA accumulation, and bitwise checkpoint resume."""
+    cfg = ExperimentConfig(
+        optimizer=OptimizerConfig(name="sophia_h", learning_rate=3e-4, beta2=0.99, rho=0.03),
+        model=ModelConfig(attention="reference")
+    )
+    params = {"w": jnp.ones((4, 4), dtype=jnp.float32)}
+    state = init_state(params, cfg.optimizer)
+
+    assert int(state.optimizer.step) == 0
+    assert int(state.optimizer.core_events) == 0
+    assert state.optimizer.residual == {}
+
+    h_sample = {"w": jnp.full((4, 4), 0.25, dtype=jnp.float32)}
+    state = commit_curvature(state, h_sample, None, cfg.optimizer)
+    assert int(state.optimizer.core_events) == 1
+    np.testing.assert_allclose(state.optimizer.core["w"], 0.25 * (1 - 0.99), rtol=1e-5)
+
+    ckpt_path = tmp_path / "sophia_h_ckpt.npz"
+    save_checkpoint(ckpt_path, state, cfg, train_seconds=12.5)
+
+    template = init_state(params, cfg.optimizer)
+    restored, secs = load_checkpoint(ckpt_path, template, cfg)
+    assert secs == 12.5
+    np.testing.assert_array_equal(restored.params["w"], state.params["w"])
+    np.testing.assert_array_equal(restored.optimizer.core["w"], state.optimizer.core["w"])
+    assert int(restored.optimizer.core_events) == 1

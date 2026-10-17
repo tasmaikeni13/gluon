@@ -25,7 +25,7 @@ The JAX ports were checked against the authors' sources on 2026-10-15:
   normalization with 1e-7, and the original sqrt(max(1, output/input)) adjustment.
   Matrix orientation accounts for JAX's [input, output] storage. Five iterations
   approximate orthogonalization; they are not an exact polar decomposition.
-  Tied embedding/output weights, positions and norm gains use bias-corrected
+  Tied embedding/output weights and RMSNorm gains use bias-corrected
   AdamW with a separate auxiliary learning rate and the same schedule multiplier.
 
 CPU tests compare SOAP against independent NumPy calculations and author-generated
@@ -54,15 +54,13 @@ before squaring. SOAP/Muon never run Sophia curvature events.
 
 | Config | Parameters | Main tokens per arm/seed | Main seeds | Trial tokens | Trials per arm | Tuning tokens per arm |
 |---|---:|---:|---|---:|---:|---:|
-| Config | Parameters | Main tokens per arm/seed | Main seeds | Trial tokens | Trials per arm | Tuning tokens per arm |
-|---|---:|---:|---|---:|---:|---:|
-| configs/scale125m.json | 124,373,760 | 2,500,000,000 | 1337, 1338, 1339, 1340, 1341 | 600,000,000 | 6 (+3 low-LR) | 3,600,000,000 |
-| configs/scale350m.json | 354,599,936 | 7,000,000,000 | 1337 | 70,000,000 | 6 | 420,000,000 |
-| configs/scale1b.json | 984,909,312 | 20,000,000,000 | 1337 | 200,000,000 | 6 | 1,200,000,000 |
+| configs/scale125m.json | 109,529,856 | 2,500,000,000 | 1337, 1338, 1339, 1340, 1341 | 600,000,000 | 6 (+3 low-LR) | 3,600,000,000 |
+| configs/scale350m.json | 336,380,928 | 7,000,000,000 | 1337 | 70,000,000 | 6 | 420,000,000 |
+| configs/scale1b.json | 955,221,504 | 20,000,000,000 | 1337 | 200,000,000 | 6 | 1,200,000,000 |
 
-All three stages support AdamW, Sophia-G, Rocora, SOAP and Muon. The 350M and 1B
-labels are nominal; the exact counts above include tied/padded embeddings and
-positions. All use context 1024, global batch 128, one sequence per device per
+All three stages support AdamW, Sophia-G, Sophia-H, Rocora, SOAP and Muon. The 350M and 1B
+labels are nominal; the exact counts above reflect the modern LLaMA architecture (RMSNorm, RoPE,
+SwiGLU, tied embeddings, 32k vocabulary). All use context 1024, global batch 128, one sequence per device per
 microbatch, Pallas FlashAttention, and exact final loss masks. One 1B seed is a
 screening experiment, not a repeatability study.
 
@@ -128,7 +126,7 @@ The 350M/1B recipes require new archives; they reject the existing 2.5B archive
 as too short. Do not run these preparers during implementation validation.
 [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) provides
 the sample-10BT and sample-100BT subsets. The preparer pins the resolved dataset
-revision, uses GPT-2 BPE, partitions by document-content hash, and records counts
+revision, uses modern LLaMA / Mistral tokenization (32k vocab), partitions by document-content hash, and records counts
 and hashes. No heldout document enters training. On each worker, install/copy
 the same archives at the configured paths:
 

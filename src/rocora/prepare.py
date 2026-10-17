@@ -53,11 +53,29 @@ def is_validation_document(text):
     return int.from_bytes(digest, "little") % 1000 < 10
 
 
+def load_llama_tokenizer(tokenizer_name="NousResearch/Llama-2-7b-hf"):
+    try:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(tokenizer_name)
+        eos_id = tok.eos_token_id if tok.eos_token_id is not None else 2
+        def encode_batch(texts):
+            return tok(texts, add_special_tokens=False)["input_ids"]
+        return encode_batch, eos_id, tokenizer_name
+    except ImportError:
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_pretrained(tokenizer_name)
+        eos_id = tok.token_to_id("</s>")
+        if eos_id is None:
+            eos_id = 2
+        def encode_batch(texts):
+            return [e.ids for e in tok.encode_batch(texts)]
+        return encode_batch, eos_id, tokenizer_name
+
+
 def prepare(dataset, output, dataset_config=None, revision=None, train_limit=None,
-            validation_tokens=10_000_000, batch_size=512):
+            validation_tokens=10_000_000, batch_size=512, tokenizer="NousResearch/Llama-2-7b-hf"):
     from datasets import load_dataset
     from huggingface_hub import HfApi
-    import tiktoken
     root = Path(output)
     root.mkdir(parents=True, exist_ok=True)
     if any((root / f).exists() for f in ("train.npy", "valid.npy", "metadata.json")):
@@ -65,7 +83,7 @@ def prepare(dataset, output, dataset_config=None, revision=None, train_limit=Non
     resolved_revision = HfApi().dataset_info(dataset, revision=revision).sha
     ds = load_dataset(dataset, name=dataset_config, revision=resolved_revision,
                       split="train", streaming=True)
-    enc = tiktoken.get_encoding("gpt2")
+    encode_batch, eos_token, tok_name = load_llama_tokenizer(tokenizer)
     writers = {"train": TokenWriter(root / "train.npy"), "valid": TokenWriter(root / "valid.npy")}
     documents = {"train": 0, "valid": 0}
     pending = []
@@ -73,13 +91,13 @@ def prepare(dataset, output, dataset_config=None, revision=None, train_limit=Non
 
     def flush():
         nonlocal pending
-        encoded = enc.encode_ordinary_batch(pending, num_threads=16)
+        encoded = encode_batch(pending)
         for text, tokens in zip(pending, encoded):
             name = "valid" if is_validation_document(text) else "train"
             writer = writers[name]
             limit = validation_tokens if name == "valid" else train_limit
             if limit is None or writer.count < limit:
-                writer.append(tokens + [enc.eot_token], limit)
+                writer.append(tokens + [eos_token], limit)
                 documents[name] += 1
         pending = []
 
@@ -101,7 +119,7 @@ def prepare(dataset, output, dataset_config=None, revision=None, train_limit=Non
     if train_limit is not None and writers["train"].count < train_limit:
         raise ValueError("Dataset exhausted before reaching train-limit. Use a larger FineWeb-Edu sample.")
     metadata = {"dataset": dataset, "dataset_config": dataset_config, "revision": resolved_revision,
-                "tokenizer": "gpt2 (tiktoken)", "document_separator": enc.eot_token,
+                "tokenizer": f"llama ({tok_name})", "document_separator": eos_token,
                 "split": "content hash modulo 1000; validation <10; no heldout documents enter training",
                 "train_tokens": writers["train"].count, "valid_tokens": writers["valid"].count,
                 "train_documents": documents["train"], "valid_documents": documents["valid"],
@@ -120,11 +138,13 @@ def main(argv=None):
     parser.add_argument("--output", required=True)
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--validation-tokens", type=int, default=10_000_000)
+    parser.add_argument("--tokenizer", default="NousResearch/Llama-2-7b-hf",
+                        help="LLaMA / Mistral tokenizer model identifier")
     args = parser.parse_args(argv)
     if args.validation_tokens <= 0 or (args.train_limit is not None and args.train_limit <= 0):
         parser.error("Token limits must be positive")
     prepare(args.dataset, args.output, args.dataset_config, args.revision,
-            args.train_limit, args.validation_tokens)
+            args.train_limit, args.validation_tokens, tokenizer=args.tokenizer)
 
 
 if __name__ == "__main__":

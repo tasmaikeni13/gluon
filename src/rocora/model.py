@@ -1,16 +1,67 @@
-"""Bias-free GPT with tied embeddings and stacked layers for efficient TPU scans."""
+"""Bias-free modern LLaMA architecture with RMSNorm, RoPE, and SwiGLU."""
 
 import math
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from .attention import flash_attention, reference_attention
 
 
+def rms_norm(x, weight, eps=1e-5):
+    """Root-mean-square normalization without mean-centering."""
+    xf = x.astype(jnp.float32)
+    variance = jnp.mean(jnp.square(xf), axis=-1, keepdims=True)
+    return (xf * jax.lax.rsqrt(variance + eps) * weight.astype(jnp.float32)).astype(x.dtype)
+
+
+# Alias for backward compatibility
+layer_norm = rms_norm
+
+
+def precompute_rope_freqs(length, dim, base=10000.0, dtype=jnp.float32):
+    """Precompute complex rotary frequency embeddings."""
+    channel = jnp.arange(0, dim, 2, dtype=jnp.float32)
+    inv_freq = 1.0 / (base ** (channel / dim))
+    t = jnp.arange(length, dtype=jnp.float32)
+    freqs = jnp.outer(t, inv_freq)
+    emb = jnp.concatenate((freqs, freqs), axis=-1)
+    return jnp.cos(emb).astype(dtype), jnp.sin(emb).astype(dtype)
+
+
+def apply_rotary_emb(x, cos, sin):
+    """Apply rotary embeddings to the given tensor."""
+    d = x.shape[-1]
+    x1 = x[..., : d // 2]
+    x2 = x[..., d // 2 :]
+    rotated = jnp.concatenate((-x2, x1), axis=-1)
+    return (x * cos) + (rotated * sin)
+
+
+def apply_rope(q, k, base=10000.0):
+    """Apply rotary position embeddings to query and key projections per head."""
+    length = q.shape[-2]
+    head_dim = q.shape[-1]
+    cos, sin = precompute_rope_freqs(length, head_dim, base=base, dtype=q.dtype)
+    leading_dims = (1,) * (q.ndim - 2)
+    cos = cos.reshape(*leading_dims, length, head_dim)
+    sin = sin.reshape(*leading_dims, length, head_dim)
+    return apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
+
+
+def linear(x, weight, dtype):
+    precision = jax.lax.Precision.HIGHEST if dtype == jnp.float32 else jax.lax.Precision.DEFAULT
+    return jnp.matmul(x, weight.astype(dtype), precision=precision)
+
+
 def init_params(cfg, seed=1337):
     """FP32 master parameters. Stacking layers keeps optimizer kernel count small."""
-    key = jax.random.PRNGKey(seed)
+    if isinstance(seed, (int, np.integer)):
+        key = jax.random.PRNGKey(seed)
+    else:
+        key = seed
     d, l = cfg.width, cfg.layers
+    d_ffn = cfg.d_ffn
 
     def normal(shape, scale=0.02):
         nonlocal key
@@ -20,55 +71,56 @@ def init_params(cfg, seed=1337):
     residual_scale = 0.02 / math.sqrt(2 * l)
     return {
         "embedding": normal((cfg.vocab_size, d)),
-        "position": normal((cfg.sequence_length, d)),
         "layers": {
             "norm1": jnp.ones((l, d), jnp.float32),
             "qkv": normal((l, d, 3 * d)),
             "attention_out": normal((l, d, d), residual_scale),
             "norm2": jnp.ones((l, d), jnp.float32),
-            "mlp_in": normal((l, d, cfg.mlp_ratio * d)),
-            "mlp_out": normal((l, cfg.mlp_ratio * d, d), residual_scale),
+            "mlp_gate": normal((l, d, d_ffn)),
+            "mlp_up": normal((l, d, d_ffn)),
+            "mlp_down": normal((l, d_ffn, d), residual_scale),
         },
         "final_norm": jnp.ones((d,), jnp.float32),
     }
 
 
-def layer_norm(x, weight):
-    xf = x.astype(jnp.float32)
-    mean = jnp.mean(xf, axis=-1, keepdims=True)
-    variance = jnp.mean(jnp.square(xf - mean), axis=-1, keepdims=True)
-    return ((xf - mean) * jax.lax.rsqrt(variance + 1e-5) * weight).astype(x.dtype)
-
-
-def linear(x, weight, dtype):
-    precision = jax.lax.Precision.HIGHEST if dtype == jnp.float32 else jax.lax.Precision.DEFAULT
-    return jnp.matmul(x, weight.astype(dtype), precision=precision)
-
-
 def hidden(params, tokens, cfg, curvature=False):
     dtype = jnp.float32 if curvature else jnp.bfloat16
-    x = (params["embedding"][tokens] + params["position"][:tokens.shape[1]]).astype(dtype)
+    x = params["embedding"][tokens].astype(dtype)
     batch, length = tokens.shape
+    head_dim = cfg.width // cfg.heads
+    cos, sin = precompute_rope_freqs(length, head_dim, dtype=dtype)
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
 
     def block(x, p):
-        qkv = linear(layer_norm(x, p["norm1"]), p["qkv"], dtype)
+        qkv = linear(rms_norm(x, p["norm1"]), p["qkv"], dtype)
         q, k, v = jnp.split(qkv, 3, axis=-1)
+
         def split_heads(a):
-            return a.reshape(batch, length, cfg.heads, cfg.width // cfg.heads).transpose(0, 2, 1, 3)
+            return a.reshape(batch, length, cfg.heads, head_dim).transpose(0, 2, 1, 3)
+
         q, k, v = map(split_heads, (q, k, v))
+        q = apply_rotary_emb(q, cos, sin)
+        k = apply_rotary_emb(k, cos, sin)
         if cfg.attention == "flash" and not curvature:
             y = flash_attention(q, k, v)
         else:
             y = reference_attention(q, k, v, cfg.attention_block)
         y = y.transpose(0, 2, 1, 3).reshape(batch, length, cfg.width)
         x = x + linear(y, p["attention_out"], dtype)
-        y = linear(layer_norm(x, p["norm2"]), p["mlp_in"], dtype)
-        y = jax.nn.gelu(y, approximate=False)
-        return x + linear(y, p["mlp_out"], dtype), None
+
+        # SwiGLU MLP
+        h = rms_norm(x, p["norm2"])
+        gate = linear(h, p["mlp_gate"], dtype)
+        up = linear(h, p["mlp_up"], dtype)
+        act = jax.nn.silu(gate) * up
+        y = linear(act, p["mlp_down"], dtype)
+        return x + y, None
 
     scan_block = jax.checkpoint(block) if cfg.remat else block
     x, _ = jax.lax.scan(scan_block, x, params["layers"])
-    return layer_norm(x, params["final_norm"])
+    return rms_norm(x, params["final_norm"])
 
 
 def project(params, features, cfg):

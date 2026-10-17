@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_tier4_scen01_bounded_adamw_125m_smoke_training(tmp_path):
     """Scenario 1: Realistic 3-step bounded AdamW smoke training with checkpointing."""
     cfg_125m = load_config(ROOT / "configs/scale125m.json", optimizer="adamw")
-    assert cfg_125m.model.parameter_count == 124_373_760
+    assert cfg_125m.model.parameter_count == 109_529_856
 
     # Scaled model for bounded CPU smoke execution
     model_cfg = ModelConfig(width=64, layers=2, heads=2, sequence_length=64,
@@ -186,7 +186,7 @@ def test_tier4_scen03_bounded_rocora_125m_with_residual_curvature():
 def test_tier4_scen04_bounded_muon_350m_smoke_training(tmp_path):
     """Scenario 4: Realistic 3-step bounded Muon smoke training on 350M configuration."""
     cfg_350m = load_config(ROOT / "configs/scale350m.json", optimizer="muon")
-    assert cfg_350m.model.parameter_count == 354_599_936
+    assert cfg_350m.model.parameter_count == 336_380_928
 
     model_cfg = ModelConfig(width=64, layers=2, heads=2, sequence_length=64,
                             vocab_size=128, valid_vocab_size=128, attention="reference",
@@ -216,7 +216,7 @@ def test_tier4_scen04_bounded_muon_350m_smoke_training(tmp_path):
     save_checkpoint(ckpt_file, state, exp_cfg, train_seconds=2.0)
     template = init_state(params, exp_cfg.optimizer)
     restored, _ = load_checkpoint(ckpt_file, template, exp_cfg)
-    np.testing.assert_array_equal(restored.params["layers"]["mlp_in"], state.params["layers"]["mlp_in"])
+    np.testing.assert_array_equal(restored.params["layers"]["mlp_gate"], state.params["layers"]["mlp_gate"])
 
 
 # ==============================================================================
@@ -255,7 +255,7 @@ def test_tier4_scen05_bounded_soap_350m_smoke_training(tmp_path):
     save_checkpoint(ckpt_file, state, exp_cfg, train_seconds=2.5)
     template = init_state(params, exp_cfg.optimizer)
     restored, _ = load_checkpoint(ckpt_file, template, exp_cfg)
-    np.testing.assert_array_equal(restored.params["layers"]["mlp_out"], state.params["layers"]["mlp_out"])
+    np.testing.assert_array_equal(restored.params["layers"]["mlp_down"], state.params["layers"]["mlp_down"])
 
 
 # ==============================================================================

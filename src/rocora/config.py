@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 
-OPTIMIZERS = ("adamw", "sophia", "rocora", "soap", "muon")
+OPTIMIZERS = ("adamw", "sophia", "sophia_h", "rocora", "soap", "muon")
 
 
 @dataclass(frozen=True)
@@ -15,9 +15,10 @@ class ModelConfig:
     layers: int = 12
     heads: int = 12
     sequence_length: int = 1024
-    vocab_size: int = 50304
-    valid_vocab_size: int = 50257
-    mlp_ratio: int = 4
+    vocab_size: int = 32000
+    valid_vocab_size: int = 32000
+    mlp_ratio: float = 8 / 3
+    multiple_of: int = 64
     attention: str = "flash"
     attention_block: int = 128
     loss_chunk: int = 128
@@ -36,14 +37,23 @@ class ModelConfig:
             self.sequence_length % 128 or self.width // self.heads > 128
         ):
             raise ValueError("TPU FlashAttention requires sequence multiple 128 and head width <=128")
+        if (self.width // self.heads) % 2 != 0:
+            raise ValueError("head dimension must be even for RoPE")
         if self.loss_chunk <= 0 or self.attention_block <= 0:
             raise ValueError("Chunk sizes must be positive")
 
     @property
+    def d_ffn(self):
+        raw = int(self.width * self.mlp_ratio)
+        if self.width < self.multiple_of:
+            return max(1, raw)
+        return int(self.multiple_of * round(raw / self.multiple_of))
+
+    @property
     def parameter_count(self):
         d = self.width
-        return (self.vocab_size + self.sequence_length) * d + self.layers * (
-            (4 + 2 * self.mlp_ratio) * d * d + 2 * d
+        return self.vocab_size * d + self.layers * (
+            4 * d * d + 3 * d * self.d_ffn + 2 * d
         ) + d
 
 

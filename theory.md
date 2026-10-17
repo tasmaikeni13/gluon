@@ -118,6 +118,7 @@ share an uncorrected momentum EMA m and core EMA s. Rocora additionally keeps a
 residual EMA r, refreshed only at complete measurement groups.
 
     h = s                         Sophia-G
+    h = h_hutchinson              Sophia-H
     h = s + w*r                   Rocora
     denominator = max(rho*h, 0) + epsilon
     update = clip(m / denominator, -1, 1)
@@ -131,10 +132,10 @@ improve scaling, do nothing, or worsen it; the experiment must distinguish these
 
 ## Study and decision
 
-1. 125M scale: 124,373,760-parameter GPT, seeds 1337/1338/1339, exactly 2.5B processed
+1. 125M scale: 109,529,856-parameter LLaMA, seeds 1337/1338/1339/1340/1341, exactly 2.5B processed
    FineWeb-Edu training tokens per run.
-2. 350M scale: 354,599,936 parameters and exactly 7B FineWeb-Edu tokens, seed 1337.
-3. 1B scale: 984,909,312 parameters and exactly 20B FineWeb-Edu tokens, seed 1337.
+2. 350M scale: 336,380,928 parameters and exactly 7B FineWeb-Edu tokens, seed 1337.
+3. 1B scale: 955,221,504 parameters and exactly 20B FineWeb-Edu tokens, seed 1337.
    The nominal 125M/350M/1B stages include SOAP and Muon practical baselines.
    Data must come from sufficiently large, document-separated archives.
 4. At every scale: identical architectures, data ordering
@@ -158,8 +159,8 @@ moment, following the authors' implementation; it does not reconstruct a full
 rotated covariance. Axes larger than 2048 and all one-dimensional gain tensors
 are unpreconditioned. Per-layer matrix shapes are preserved even though model
 parameters are stored in stacks. Muon uses a finite BF16 quintic approximation
-to orthogonalization, with a separate AdamW update on tied input/output,
-position and normalization parameters. Neither optimizer implies an exact
+to orthogonalization, with a separate AdamW update on tied input/output
+embeddings and RMSNorm parameters. Neither optimizer implies an exact
 curvature inverse. FP32 bases/Grams and BF16 normal model operations introduce
 numerical error. Bounded runtime checks do not establish convergence or tuning
 quality at any scale.

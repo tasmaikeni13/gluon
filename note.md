@@ -4,10 +4,9 @@
 
 This document records the empirical results, architectural analysis, and configuration decisions regarding custom Pallas TPU kernels and XLA fusion for language model training on Cloud TPU v4 hardware across **125M, 350M, and 1B** model scales.
 
-### 1. Optimizers Default Policy: XLA Fusion
-- **Default for Main Runs**: **XLA** across all 5 optimizers (AdamW, Sophia-G, Rocora, SOAP, Muon).
-- **Rationale**: While extensive research and kernel engineering were conducted to write custom Pallas TPU kernels for all five optimizers, pointwise updates (AdamW, Sophia-G, Rocora) and Newton–Schulz iterations (Muon) did not outperform XLA compiler fusion. Although Pallas yielded a **+15.5% speedup on SOAP** at 125M scale, enabling custom kernels for SOAP while using XLA for the other arms would create an asymmetric, unfair baseline comparison. To maintain strict scientific controls, **all optimizers default to XLA fusion**.
-- **Supplementary Material**: All engineered Pallas kernels are retained in `src/rocora/pallas_optimizers.py` as supplementary material and can be toggled on demand via `use_pallas: true` (or `pallas_mode: "pallas"`).
+### 1. Optimizers Policy: Strictly Pure XLA Fusion
+- **Policy**: **XLA Fusion** across all optimizers (AdamW, Sophia-G, Sophia-H, Rocora, SOAP, Muon).
+- **Rationale**: While extensive research was conducted on custom Pallas TPU kernels, pointwise updates (AdamW, Sophia-G, Sophia-H, Rocora) and Newton–Schulz iterations (Muon) did not outperform XLA compiler fusion. All custom Pallas optimizer kernels have been completely removed and deleted, ensuring that all optimizer update steps strictly and solely execute via XLA-fused paths in `src/rocora/updates.py` and `src/rocora/matrix_optimizers.py`. Pallas is reserved exclusively for TPU FlashAttention.
 
 ### 2. Attention Default Policy: Pallas TPU FlashAttention
 - **Default**: **Pallas TPU FlashAttention** (`attention: "flash"`).
@@ -56,17 +55,14 @@ All measurements were obtained on Google Cloud TPU v4 hardware using batch size 
 
 ## How to Toggle Between Pallas and XLA
 
-### Optimizer Execution Options
+### Optimizer Execution
 In configuration JSON (e.g. `configs/scale125m.json`) or code:
 ```json
 "optimizer": {
-  "name": "rocora",
-  "use_pallas": false,
-  "pallas_mode": "xla"
+  "name": "rocora"
 }
 ```
-- `"pallas_mode": "xla"` (Default): Uses XLA-fused optimizer updates across all arms.
-- `"pallas_mode": "pallas"`: Forces execution of the custom Pallas TPU kernels in `src/rocora/pallas_optimizers.py`.
+All optimizer updates execute exclusively via pure XLA fusion across all optimizer arms. Custom Pallas optimizer kernels are completely removed.
 
 ### Attention Execution Options
 In configuration JSON:

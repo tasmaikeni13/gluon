@@ -19,7 +19,7 @@ from jax.experimental import multihost_utils
 
 from .checkpoint import identity, load_checkpoint, save_checkpoint
 from .config import OPTIMIZERS, load_config, learning_rate
-from .curvature import core_gradients, residual_diagonal
+from .curvature import core_gradients, residual_diagonal, hutchinson_diagonal
 from .data import TokenBatches, shard_batch, validate_corpus
 from .model import decay_mask, init_params, loss_sum
 from .optimizers import init_state, update, commit_curvature, gradient_norm_and_scale, curvature_diagnostics
@@ -80,11 +80,14 @@ def build_steps(cfg, params):
         key = jax.random.fold_in(jax.random.PRNGKey(cfg.seed + 7411), state.optimizer.step)
         core, residual = None, None
         if do_core:
-            core_key = jax.random.fold_in(jax.random.fold_in(key, 0), jax.lax.axis_index("data"))
-            grads, count = core_gradients(state.params, batch, model_cfg, core_key)
-            grads = average_tree(grads, count)
-            total = jax.lax.psum(count,"data")
-            core = jax.tree.map(lambda g: total*jnp.square(g),grads)
+            if opt_cfg.name == "sophia_h":
+                core = hutchinson_diagonal(state.params, batch, model_cfg, key, axis_name="data")
+            else:
+                core_key = jax.random.fold_in(jax.random.fold_in(key, 0), jax.lax.axis_index("data"))
+                grads, count = core_gradients(state.params, batch, model_cfg, core_key)
+                grads = average_tree(grads, count)
+                total = jax.lax.psum(count,"data")
+                core = jax.tree.map(lambda g: total*jnp.square(g),grads)
         if do_residual:
             # Every replica uses the SAME probe vector; products are averaged over data.
             # Carry the residual EMA through the complete group instead of
@@ -239,7 +242,7 @@ def main(argv=None):
             if step + 1 < stop:
                 next_batch = prefetch.submit(loader.batch, step + 1)
             batch = shard_batch(batch, devices)
-            do_core = (cfg.optimizer.name in ("sophia", "rocora")
+            do_core = (cfg.optimizer.name in ("sophia", "sophia_h", "rocora")
                        and step % cfg.optimizer.core_interval == 0)
             do_residual = (cfg.optimizer.name == "rocora" and cfg.optimizer.residual_weight > 0
                            and step % cfg.optimizer.residual_interval == 0)
@@ -293,7 +296,7 @@ def main(argv=None):
                           f"tokens={tokens:,} time={train_seconds:.1f}s", flush=True)
                 elapsed, curvature_elapsed, loss_total, n, window_tokens = 0.0, 0.0, 0.0, 0, 0
             if (step + 1) % cfg.eval_interval == 0 or step + 1 == stop:
-                if cfg.optimizer.name in ("sophia", "rocora"):
+                if cfg.optimizer.name in ("sophia", "sophia_h", "rocora"):
                     if "diagnostics" not in compiled:
                         compiled["diagnostics"] = diagnostics.lower(state).compile()
                         multihost_utils.sync_global_devices("compile-diagnostics")
